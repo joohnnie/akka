@@ -32,7 +32,7 @@ Creating Actors
 Defining an Actor class
 -----------------------
 
-Actor classes are implemented by extending the Actor class and implementing the
+Actors are implemented by extending the :class:`Actor` base trait and implementing the
 :meth:`receive` method. The :meth:`receive` method should define a series of case
 statements (which has the type ``PartialFunction[Any, Unit]``) that defines
 which messages your Actor can handle, using standard Scala pattern matching,
@@ -152,7 +152,7 @@ The name parameter is optional, but you should preferably name your actors,
 since that is used in log messages and for identifying actors. The name must
 not be empty or start with ``$``, but it may contain URL encoded characters
 (eg. ``%20`` for a blank space).  If the given name is already in use by
-another child to the same parent an `InvalidActorNameException` is thrown.
+another child to the same parent an :class:`InvalidActorNameException` is thrown.
 
 Actors are automatically started asynchronously when created.
 
@@ -672,7 +672,7 @@ actors does not respond (i.e. processing a message for extended periods of time
 and therefore not receiving the stop command), this whole process will be
 stuck.
 
-Upon :meth:`ActorSystem.shutdown()`, the system guardian actors will be
+Upon :meth:`ActorSystem.terminate()`, the system guardian actors will be
 stopped, and the aforementioned process will ensure proper termination of the
 whole system.
 

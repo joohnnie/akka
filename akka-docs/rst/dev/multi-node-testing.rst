@@ -4,10 +4,6 @@
  Multi Node Testing
 ###################
 
-.. note:: This module is :ref:`experimental <experimental>`. This document describes how to use the features
- implemented so far. More features are coming in Akka Coltrane. Track progress of the Coltrane milestone in
- `Assembla <http://www.assembla.com/spaces/akka/milestones/418132-coltrane>`_.
-
 Multi Node Testing Concepts
 ===========================
 
@@ -176,7 +172,7 @@ The multi node testing kit is a separate jar file. Make sure that you have the f
   "com.typesafe.akka" %% "akka-multi-node-testkit" % "@version@" @crossString@
 
 If you are using the latest nightly build you should pick a timestamped Akka version from
-`<http://repo.typesafe.com/typesafe/snapshots/com/typesafe/akka/akka-multi-node-testkit_@binVersion@/>`_.
+`<https://repo.typesafe.com/typesafe/snapshots/com/typesafe/akka/akka-multi-node-testkit_@binVersion@/>`_.
 We recommend against using ``SNAPSHOT`` in order to obtain stable builds.
 
 A Multi Node Testing Example
@@ -220,3 +216,10 @@ surprising ways.
 
   * Don't use MultiNodeSpec methods like address lookup, barrier entry et.c. from other threads than the main test
     thread. This also means that you shouldn't use them from inside an actor, a future, or a scheduled task.
+
+Configuration
+=============
+
+There are several configuration properties for the Multi-Node Testing module, please refer
+to the :ref:`reference configuration <config-akka-multi-node-testkit>`.
+

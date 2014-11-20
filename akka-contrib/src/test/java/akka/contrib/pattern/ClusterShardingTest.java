@@ -4,7 +4,6 @@
 
 package akka.contrib.pattern;
 
-import java.util.Iterator;
 import java.util.concurrent.TimeUnit;
 
 import scala.concurrent.duration.Duration;
@@ -14,7 +13,8 @@ import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.ReceiveTimeout;
 import akka.japi.Procedure;
-import akka.persistence.UntypedEventsourcedProcessor;
+import akka.japi.Option;
+import akka.persistence.UntypedPersistentActor;
 
 // Doc code, compile only
 public class ClusterShardingTest {
@@ -49,12 +49,13 @@ public class ClusterShardingTest {
 
       @Override
       public String shardId(Object message) {
+        int numberOfShards = 100;
         if (message instanceof Counter.EntryEnvelope) {
           long id = ((Counter.EntryEnvelope) message).id;
-          return String.valueOf(id % 10);
+          return String.valueOf(id % numberOfShards);
         } else if (message instanceof Counter.Get) {
           long id = ((Counter.Get) message).counterId;
-          return String.valueOf(id % 10);
+          return String.valueOf(id % numberOfShards);
         } else {
           return null;
         }
@@ -64,22 +65,23 @@ public class ClusterShardingTest {
     //#counter-extractor
 
     //#counter-start
-    ClusterSharding.get(system).start("Counter", Props.create(Counter.class),
-        messageExtractor);
+    Option<String> roleOption = Option.none();
+    ActorRef startedCounterRegion = ClusterSharding.get(system).start("Counter", 
+      Props.create(Counter.class), Option.java2ScalaOption(roleOption), false, messageExtractor);
     //#counter-start
 
     //#counter-usage
     ActorRef counterRegion = ClusterSharding.get(system).shardRegion("Counter");
-    counterRegion.tell(new Counter.Get(100), getSelf());
+    counterRegion.tell(new Counter.Get(123), getSelf());
 
-    counterRegion.tell(new Counter.EntryEnvelope(100,
+    counterRegion.tell(new Counter.EntryEnvelope(123,
         Counter.CounterOp.INCREMENT), getSelf());
-    counterRegion.tell(new Counter.Get(100), getSelf());
+    counterRegion.tell(new Counter.Get(123), getSelf());
     //#counter-usage
   }
 
   static//#counter-actor
-  public class Counter extends UntypedEventsourcedProcessor {
+  public class Counter extends UntypedPersistentActor {
 
     public static enum CounterOp {
       INCREMENT, DECREMENT
@@ -112,6 +114,13 @@ public class ClusterShardingTest {
     }
 
     int count = 0;
+
+    // getSelf().path().parent().parent().name() is the type name (utf-8 URL-encoded)
+    // getSelf().path().name() is the entry identifier (utf-8 URL-encoded)
+    @Override
+    public String persistenceId() {
+      return getSelf().path().parent().parent().name() + "-" + getSelf().path().name();
+    }
 
     @Override
     public void preStart() throws Exception {

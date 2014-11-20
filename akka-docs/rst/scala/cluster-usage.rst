@@ -76,20 +76,21 @@ otherwise it can take up to the configured ``seed-node-timeout`` until the nodes
 can join.
 
 Once more than two seed nodes have been started it is no problem to shut down the first
-seed node. If the first seed node is restarted it will first try join the other 
+seed node. If the first seed node is restarted, it will first try to join the other
 seed nodes in the existing cluster.
 
-If you don't configure the seed nodes you need to join manually, using :ref:`cluster_jmx_scala`
-or :ref:`cluster_command_line_scala`. You can join to any node in the cluster. It doesn't 
-have to be configured as a seed node.
+If you don't configure seed nodes you need to join the cluster programmatically or manually.
 
-Joining can also be performed programatically with ``Cluster(system).join``. Note that
-you can only join to an existing cluster member, which means that for bootstrapping some
+Manual joining can be performed by using ref:`cluster_jmx_scala` or :ref:`cluster_command_line_scala`.
+Joining programatically can be performed with ``Cluster(system).join``.
+
+You can join to any node in the cluster. It does not have to be configured as a seed node.
+Note that you can only join to an existing cluster member, which means that for bootstrapping some
 node must join itself.
 
-You may also use ``Cluster(system).joinSeedNodes``, which is attractive when dynamically 
-discovering other nodes at startup by using some external tool or API. When using 
-``joinSeedNodes`` you should not include the node itself except for the node that is 
+You may also use ``Cluster(system).joinSeedNodes`` to join programmatically,
+which is attractive when dynamically discovering other nodes at startup by using some external tool or API.
+When using ``joinSeedNodes`` you should not include the node itself except for the node that is
 supposed to be the first seed node, and that should be placed first in parameter to 
 ``joinSeedNodes``.
 
@@ -104,6 +105,8 @@ When it has successfully joined it must be restarted to be able to join another
 cluster or to join the same cluster again. It can use the same host name and port
 after the restart, but it must have been removed from the cluster before the join
 request is accepted.
+
+.. _automatic-vs-manual-downing-scala:
 
 Automatic vs. Manual Downing
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -396,23 +399,23 @@ Cluster Aware Routers
 All :ref:`routers <routing-scala>` can be made aware of member nodes in the cluster, i.e.
 deploying new routees or looking up routees on nodes in the cluster.
 When a node becomes unreachable or leaves the cluster the routees of that node are
-automatically unregistered from the router. When new nodes join the cluster additional
+automatically unregistered from the router. When new nodes join the cluster, additional
 routees are added to the router, according to the configuration. Routees are also added 
 when a node becomes reachable again, after having been unreachable.
 
 There are two distinct types of routers. 
 
 * **Group - router that sends messages to the specified path using actor selection** 
-  The routees can be shared between routers running on different nodes in the cluster. 
+  The routees can be shared among routers running on different nodes in the cluster. 
   One example of a use case for this type of router is a service running on some backend 
   nodes in the cluster and used by routers running on front-end nodes in the cluster.
 
 * **Pool - router that creates routees as child actors and deploys them on remote nodes.** 
   Each router will have its own routee instances. For example, if you start a router
-  on 3 nodes in a 10 nodes cluster you will have 30 routee actors in total if the router is
-  configured to use one inctance per node. The routees created by the different routers
-  will not be shared between the routers. One example of a use case for this type of router
-  is a single master that coordinate jobs and delegates the actual work to routees running 
+  on 3 nodes in a 10-node cluster, you will have 30 routees in total if the router is
+  configured to use one instance per node. The routees created by the different routers
+  will not be shared among the routers. One example of a use case for this type of router
+  is a single master that coordinates jobs and delegates the actual work to routees running 
   on other nodes in the cluster.
 
 Router with Group of Routees
@@ -423,16 +426,13 @@ That is not done by the router. The configuration for a group looks like this:
 
 .. includecode:: ../../../akka-samples/akka-sample-cluster-scala/src/multi-jvm/scala/sample/cluster/stats/StatsSampleSpec.scala#router-lookup-config
 
-.. note:: 
-
+.. note::
   The routee actors should be started as early as possible when starting the actor system, because
-  the router will try to use them as soon as the member status is changed to 'Up'. If it is not
-  available at that point it will be removed from the router and it will only re-try when the 
-  cluster members are changed.
+  the router will try to use them as soon as the member status is changed to 'Up'.
 
-It is the relative actor paths defined in ``routees.paths`` that identify what actor to lookup. 
-It is possible to limit the lookup of routees to member nodes tagged with a certain role by
-specifying ``use-role``.
+The relative actor paths defined in ``routees.paths`` are used as for selecting the actors to which the messages will be forwarded to by the router.
+Messages will be forwarded to the routees using :ref:`ActorSelection <actorSelection-scala>`, so the same delivery semantics should be expected.
+It is possible to limit the lookup of routees to member nodes tagged with a certain role by specifying ``use-role``.
 
 ``nr-of-instances`` defines total number of routees in the cluster. Setting ``nr-of-instances`` 
 to a high value will result in new routees added to the router when nodes join the cluster.
@@ -725,12 +725,8 @@ Example of system properties to enable remote monitoring and management::
 Configuration
 ^^^^^^^^^^^^^
 
-There are several configuration properties for the cluster. We refer to the following
-reference file for more information:
-
-
-.. literalinclude:: ../../../akka-cluster/src/main/resources/reference.conf
-   :language: none
+There are several configuration properties for the cluster. We refer to the 
+:ref:`reference configuration <config-akka-cluster>` for more information.
 
 Cluster Info Logging
 --------------------

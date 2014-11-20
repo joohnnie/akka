@@ -77,7 +77,7 @@ Using a snapshot version
 The Akka nightly snapshots are published to http://repo.akka.io/snapshots/ and are
 versioned with both ``SNAPSHOT`` and timestamps. You can choose a timestamped
 version to work with and can decide when to update to a newer version. The Akka
-snapshots repository is also proxied through http://repo.typesafe.com/typesafe/snapshots/
+snapshots repository is also proxied through https://repo.typesafe.com/typesafe/snapshots/
 which includes proxies for several other repositories that Akka modules depend on.
 
 .. warning::
@@ -106,12 +106,12 @@ Maven repositories
 
 For Akka version 2.1-M2 and onwards:
 
-`Maven Central <http://repo1.maven.org/maven2/>`_
+`Maven Central <https://repo1.maven.org/maven2/>`_
 
 For previous Akka versions:
 
 `Akka Repo <http://repo.akka.io/releases/>`_
-`Typesafe Repo <http://repo.typesafe.com/typesafe/releases/>`_
+`Typesafe Repo <https://repo.typesafe.com/typesafe/releases/>`_
 
 Using Akka with Maven
 ---------------------
@@ -120,7 +120,7 @@ The simplest way to get started with Akka and Maven is to check out the
 `Typesafe Activator <http://www.typesafe.com/platform/getstarted>`_
 tutorial named `Akka Main in Java <http://www.typesafe.com/activator/template/akka-sample-main-java>`_.
 
-Since Akka is published to Maven Central (for versions since 2.1-M2), is it
+Since Akka is published to Maven Central (for versions since 2.1-M2), it is
 enough to add the Akka dependencies to the POM. For example, here is the
 dependency for akka-actor:
 
@@ -132,6 +132,20 @@ dependency for akka-actor:
     <version>@version@</version>
   </dependency>
 
+For snapshot versions, the snapshot repository needs to be added as well:
+
+.. code-block:: xml
+
+    <repositories>
+      <repository>
+        <id>akka-snapshots</id>
+          <snapshots>
+            <enabled>true</enabled>
+          </snapshots>
+        <url>http://repo.akka.io/snapshots/</url>
+      </repository>
+    </repositories>
+
 **Note**: for snapshot versions both ``SNAPSHOT`` and timestamped versions are published.
 
 
@@ -139,7 +153,7 @@ Using Akka with SBT
 -------------------
 
 The simplest way to get started with Akka and SBT is to check out the
-`Akka/SBT template <http://www.typesafe.com/resources/getting-started/typesafe-stack/downloading-installing.html#template-projects-for-scala-akka-and-play>`_
+`Akka/SBT template <https://www.typesafe.com/resources/getting-started/typesafe-stack/downloading-installing.html#template-projects-for-scala-akka-and-play>`_
 project.
 
 Summary of the essential parts for using Akka with SBT:
@@ -156,8 +170,6 @@ SBT installation instructions on `https://github.com/harrah/xsbt/wiki/Setup <htt
 
     scalaVersion := "@scalaVersion@"
 
-    resolvers += "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/"
-
     libraryDependencies +=
       "com.typesafe.akka" %% "akka-actor" % "@version@" @crossString@
 
@@ -168,12 +180,18 @@ SBT installation instructions on `https://github.com/harrah/xsbt/wiki/Setup <htt
     libraryDependencies +=
       "com.typesafe.akka" % "akka-actor_@binVersion@" % "@version@"
 
+For snapshot versions, the snapshot repository needs to be added as well:
+
+.. parsed-literal::
+
+    resolvers += "Akka Snapshot Repository" at "http://repo.akka.io/snapshots/"
+
 
 Using Akka with Gradle
 ----------------------
 
-Requires at least `Gradle <http://gradle.org>`_ 1.4
-Uses the `Scala plugin <http://gradle.org/docs/current/userguide/scala_plugin.html>`_
+Requires at least `Gradle <https://gradle.org>`_ 1.4
+Uses the `Scala plugin <http://www.gradle.org/docs/current/userguide/scala_plugin.html>`_
 
 .. parsed-literal::
 
@@ -194,6 +212,17 @@ Uses the `Scala plugin <http://gradle.org/docs/current/userguide/scala_plugin.ht
     dependencies {
       compile group: 'com.typesafe.akka', name: 'akka-actor_@binVersion@', version: '@version@'
       compile group: 'org.scala-lang', name: 'scala-library', version: '@scalaVersion@'
+    }
+
+For snapshot versions, the snapshot repository needs to be added as well:
+
+.. parsed-literal::
+
+    repositories {
+      mavenCentral()
+      maven {
+        url "http://repo.akka.io/snapshots/"
+      }
     }
 
 
@@ -226,18 +255,18 @@ Do not use -optimize Scala compiler flag
 Build from sources
 ------------------
 
-Akka uses Git and is hosted at `Github <http://github.com>`_.
+Akka uses Git and is hosted at `Github <https://github.com>`_.
 
-* Akka: clone the Akka repository from `<http://github.com/akka/akka>`_
+* Akka: clone the Akka repository from `<https://github.com/akka/akka>`_
 
 Continue reading the page on :ref:`building-akka`
 
 Need help?
 ----------
 
-If you have questions you can get help on the `Akka Mailing List <http://groups.google.com/group/akka-user>`_.
+If you have questions you can get help on the `Akka Mailing List <https://groups.google.com/group/akka-user>`_.
 
-You can also ask for `commercial support <http://www.typesafe.com>`_.
+You can also ask for `commercial support <https://www.typesafe.com>`_.
 
 Thanks for being a part of the Akka community.
 

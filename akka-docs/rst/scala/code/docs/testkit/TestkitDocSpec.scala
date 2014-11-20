@@ -9,8 +9,9 @@ import akka.testkit._
 
 //#imports-test-probe
 import scala.concurrent.duration._
-import akka.actor._
 import scala.concurrent.Future
+import akka.actor._
+import akka.testkit.TestProbe
 
 //#imports-test-probe
 
@@ -74,7 +75,10 @@ object TestkitDocSpec {
     //#logging-receive
     import akka.event.LoggingReceive
     def receive = LoggingReceive {
-      case msg => // Do something...
+      case msg => // Do something ...
+    }
+    def otherState: Receive = LoggingReceive.withLabel("other") {
+      case msg => // Do something else ...
     }
     //#logging-receive
   }
@@ -280,7 +284,7 @@ class TestkitDocSpec extends AkkaSpec with DefaultTimeout with ImplicitSender {
       //#put-your-test-code-here
       val probe = TestProbe()
       probe.send(testActor, "hello")
-      try expectMsg("hello") catch { case NonFatal(e) => system.shutdown(); throw e }
+      try expectMsg("hello") catch { case NonFatal(e) => system.terminate(); throw e }
       //#put-your-test-code-here
 
       shutdown(system)

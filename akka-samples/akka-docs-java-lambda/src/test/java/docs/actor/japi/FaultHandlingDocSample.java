@@ -19,11 +19,8 @@ import akka.util.Timeout;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import scala.concurrent.duration.Duration;
-import scala.PartialFunction;
-import scala.runtime.BoxedUnit;
 
 import static akka.japi.Util.classTag;
-import static akka.actor.SupervisorStrategy.resume;
 import static akka.actor.SupervisorStrategy.restart;
 import static akka.actor.SupervisorStrategy.stop;
 import static akka.actor.SupervisorStrategy.escalate;
@@ -73,21 +70,21 @@ public class FaultHandlingDocSample {
       context().setReceiveTimeout(Duration.create("15 seconds"));
     }
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return LoggingReceive.create(ReceiveBuilder.
+    public Listener() {
+      receive(LoggingReceive.create(ReceiveBuilder.
         match(Progress.class, progress -> {
           log().info("Current progress: {} %", progress.percent);
           if (progress.percent >= 100.0) {
             log().info("That's all, shutting down");
-            context().system().shutdown();
+            context().system().terminate();
           }
         }).
         matchEquals(ReceiveTimeout.getInstance(), x -> {
           // No progress within 15 seconds, ServiceUnavailable
           log().error("Shutting down due to unavailable service");
-          context().system().shutdown();
-        }).build(), context());
+          context().system().terminate();
+        }).build(), context()
+      ));
     }
   }
 
@@ -137,9 +134,8 @@ public class FaultHandlingDocSample {
       return strategy;
     }
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return LoggingReceive.create(ReceiveBuilder.
+    public Worker() {
+      receive(LoggingReceive.create(ReceiveBuilder.
         matchEquals(Start, x -> progressListener == null, x -> {
           progressListener = sender();
           context().system().scheduler().schedule(
@@ -160,7 +156,8 @@ public class FaultHandlingDocSample {
               }
             }, context().dispatcher()), context().dispatcher())
             .to(progressListener);
-        }).build(), context());
+        }).build(), context())
+      );
     }
   }
 
@@ -266,9 +263,8 @@ public class FaultHandlingDocSample {
       storage.tell(new Get(key), self());
     }
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return LoggingReceive.create(ReceiveBuilder.
+    public CounterService() {
+      receive(LoggingReceive.create(ReceiveBuilder.
         match(Entry.class, entry -> entry.key.equals(key) && counter == null, entry -> {
           // Reply from Storage of the initial value, now we can create the Counter
           final long value = entry.value;
@@ -301,7 +297,8 @@ public class FaultHandlingDocSample {
         matchEquals(Reconnect, o -> {
           // Re-establish storage after the scheduled delay
           initStorage();
-        }).build(), context());
+        }).build(), context())
+      );
     }
 
     void forwardOrPlaceInBacklog(Object msg) {
@@ -348,11 +345,8 @@ public class FaultHandlingDocSample {
     public Counter(String key, long initialValue) {
       this.key = key;
       this.count = initialValue;
-    }
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return LoggingReceive.create(ReceiveBuilder.
+      receive(LoggingReceive.create(ReceiveBuilder.
         match(UseStorage.class, useStorage -> {
           storage = useStorage.storage;
           storeCount();
@@ -363,7 +357,8 @@ public class FaultHandlingDocSample {
         }).
         matchEquals(GetCurrentCount, gcc -> {
           sender().tell(new CurrentCount(key, count), self());
-        }).build(), context());
+        }).build(), context())
+      );
     }
 
     void storeCount() {
@@ -435,9 +430,8 @@ public class FaultHandlingDocSample {
 
     final DummyDB db = DummyDB.instance;
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return LoggingReceive.create(ReceiveBuilder.
+    public Storage() {
+      receive(LoggingReceive.create(ReceiveBuilder.
         match(Store.class, store -> {
           db.save(store.entry.key, store.entry.value);
         }).
@@ -445,7 +439,8 @@ public class FaultHandlingDocSample {
           Long value = db.load(get.key);
           sender().tell(new Entry(get.key, value == null ?
             Long.valueOf(0L) : value), self());
-        }).build(), context());
+        }).build(), context())
+      );
     }
   }
 

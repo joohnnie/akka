@@ -12,6 +12,7 @@ import scala.util.control.NonFatal
 import akka.actor.{ ActorLogging, Actor, ActorRef }
 import akka.dispatch.{ RequiresMessageQueue, UnboundedMessageQueueSemantics }
 import akka.util.ByteString
+import akka.io.Inet.DatagramChannelCreator
 import akka.io.SelectionHandler._
 import akka.io.Udp._
 
@@ -31,13 +32,15 @@ private[io] class UdpListener(val udp: UdpExt,
 
   context.watch(bind.handler) // sign death pact
 
-  val channel = DatagramChannel.open
+  val channel = bind.options.collectFirst {
+    case creator: DatagramChannelCreator ⇒ creator
+  }.getOrElse(DatagramChannelCreator()).create()
   channel.configureBlocking(false)
 
   val localAddress =
     try {
       val socket = channel.socket
-      bind.options.foreach(_.beforeDatagramBind(socket))
+      bind.options.foreach(_.beforeBind(channel))
       socket.bind(bind.localAddress)
       val ret = socket.getLocalSocketAddress match {
         case isa: InetSocketAddress ⇒ isa
@@ -45,6 +48,7 @@ private[io] class UdpListener(val udp: UdpExt,
       }
       channelRegistry.register(channel, OP_READ)
       log.debug("Successfully bound to [{}]", ret)
+      bind.options.foreach(_.afterConnect(channel))
       ret
     } catch {
       case NonFatal(e) ⇒

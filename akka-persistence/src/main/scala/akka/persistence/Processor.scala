@@ -7,6 +7,7 @@ package akka.persistence
 import akka.AkkaException
 import akka.actor._
 import akka.dispatch._
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * An actor that persists (journals) messages of type [[Persistent]]. Messages of other types are not persisted.
@@ -51,8 +52,30 @@ import akka.dispatch._
  * @see [[Recover]]
  * @see [[PersistentBatch]]
  */
-trait Processor extends Actor with Recovery {
+@deprecated("Processor will be removed. Instead extend `akka.persistence.PersistentActor` and use it's `persistAsync(command)(callback)` method to get equivalent semantics.", since = "2.3.4")
+trait Processor extends ProcessorImpl {
+  /**
+   * Persistence id. Defaults to this persistent-actors's path and can be overridden.
+   */
+  override def persistenceId: String = processorId
+}
+
+/**
+ * INTERNAL API
+ */
+private[akka] object ProcessorImpl {
+  // ok to wrap around (2*Int.MaxValue restarts will not happen within a journal roundtrip)
+  private val instanceIdCounter = new AtomicInteger
+}
+
+/** INTERNAL API */
+@deprecated("Processor will be removed. Instead extend `akka.persistence.PersistentActor` and use it's `persistAsync(command)(callback)` method to get equivalent semantics.", since = "2.3.4")
+private[akka] trait ProcessorImpl extends Actor with Recovery {
+  // TODO: remove Processor in favor of PersistentActor #15230
+
   import JournalProtocol._
+
+  private[persistence] val instanceId: Int = ProcessorImpl.instanceIdCounter.incrementAndGet()
 
   /**
    * Processes the highest stored sequence number response from the journal and then switches
@@ -66,6 +89,7 @@ trait Processor extends Actor with Recovery {
         _currentState = processing
         sequenceNr = highest
         receiverStash.unstashAll()
+        onRecoveryCompleted(receive)
       case ReadHighestSequenceNrFailure(cause) ⇒
         onRecoveryFailure(receive, cause)
       case other ⇒
@@ -82,23 +106,19 @@ trait Processor extends Actor with Recovery {
     private var batching = false
 
     def aroundReceive(receive: Receive, message: Any) = message match {
-      case r: Recover             ⇒ // ignore
-      case ReplayedMessage(p)     ⇒ processPersistent(receive, p) // can occur after unstash from user stash
-      case WriteMessageSuccess(p) ⇒ processPersistent(receive, p)
-      case WriteMessageFailure(p, cause) ⇒
-        val notification = PersistenceFailure(p.payload, p.sequenceNr, cause)
-        if (receive.isDefinedAt(notification)) process(receive, notification)
-        else {
-          val errorMsg = "Processor killed after persistence failure " +
-            s"(processor id = [${processorId}], sequence nr = [${p.sequenceNr}], payload class = [${p.payload.getClass.getName}]). " +
-            "To avoid killing processors on persistence failure, a processor must handle PersistenceFailure messages."
-          throw new ActorKilledException(errorMsg)
-        }
-      case LoopMessageSuccess(m) ⇒ process(receive, m)
-      case WriteMessagesSuccess | WriteMessagesFailure(_) ⇒
+      case r: Recover                                ⇒ // ignore
+      case ReplayedMessage(p)                        ⇒ processPersistent(receive, p) // can occur after unstash from user stash
+      case WriteMessageSuccess(p: PersistentRepr, _) ⇒ processPersistent(receive, p)
+      case WriteMessageSuccess(r: Resequenceable, _) ⇒ process(receive, r)
+      case WriteMessageFailure(p, cause, _)          ⇒ process(receive, PersistenceFailure(p.payload, p.sequenceNr, cause))
+      case LoopMessageSuccess(m, _)                  ⇒ process(receive, m)
+      case WriteMessagesSuccessful | WriteMessagesFailed(_) ⇒
         if (processorBatch.isEmpty) batching = false else journalBatch()
       case p: PersistentRepr ⇒
         addToBatch(p)
+        if (!batching || maxBatchSizeReached) journalBatch()
+      case n: NonPersistentRepr ⇒
+        addToBatch(n)
         if (!batching || maxBatchSizeReached) journalBatch()
       case pb: PersistentBatch ⇒
         // submit all batched messages before submitting this user batch (isolated)
@@ -108,21 +128,24 @@ trait Processor extends Actor with Recovery {
       case m ⇒
         // submit all batched messages before looping this message
         if (processorBatch.isEmpty) batching = false else journalBatch()
-        journal forward LoopMessage(m, self)
+        journal forward LoopMessage(m, self, instanceId)
     }
 
-    def addToBatch(p: PersistentRepr): Unit =
-      processorBatch = processorBatch :+ p.update(processorId = processorId, sequenceNr = nextSequenceNr(), sender = sender)
+    def addToBatch(p: Resequenceable): Unit = p match {
+      case p: PersistentRepr ⇒
+        processorBatch = processorBatch :+ p.update(persistenceId = persistenceId, sequenceNr = nextSequenceNr(), sender = sender())
+      case r ⇒
+        processorBatch = processorBatch :+ r
+    }
 
     def addToBatch(pb: PersistentBatch): Unit =
-      pb.persistentReprList.foreach(addToBatch)
+      pb.batch.foreach(addToBatch)
 
     def maxBatchSizeReached: Boolean =
       processorBatch.length >= extension.settings.journal.maxMessageBatchSize
 
     def journalBatch(): Unit = {
-      journal ! WriteMessages(processorBatch, self)
-      processorBatch = Vector.empty
+      flushJournalBatch()
       batching = true
     }
   }
@@ -134,7 +157,7 @@ trait Processor extends Actor with Recovery {
    */
   private[persistence] def onReplaySuccess(receive: Receive, awaitReplay: Boolean): Unit = {
     _currentState = initializing
-    journal ! ReadHighestSequenceNr(lastSequenceNr, processorId, self)
+    journal ! ReadHighestSequenceNr(lastSequenceNr, persistenceId, self)
   }
 
   /**
@@ -144,33 +167,32 @@ trait Processor extends Actor with Recovery {
     onRecoveryFailure(receive, cause)
 
   /**
-   * Invokes this processor's behavior with a `RecoveryFailure` message, if handled, otherwise throws a
-   * `RecoveryFailureException`.
+   * Invokes this processor's behavior with a `RecoveryFailure` message.
    */
-  private def onRecoveryFailure(receive: Receive, cause: Throwable): Unit = {
-    val notification = RecoveryFailure(cause)
-    if (receive.isDefinedAt(notification)) {
-      receive(notification)
-    } else {
-      val errorMsg = s"Recovery failure by journal (processor id = [${processorId}])"
-      throw new RecoveryException(errorMsg, cause)
-    }
-  }
+  private def onRecoveryFailure(receive: Receive, cause: Throwable): Unit =
+    receive.applyOrElse(RecoveryFailure(cause), unhandled)
 
-  private val _processorId = extension.processorId(self)
+  /**
+   * Invokes this processor's behavior with a `RecoveryFinished` message.
+   */
+  private def onRecoveryCompleted(receive: Receive): Unit =
+    receive.applyOrElse(RecoveryCompleted, unhandled)
 
-  private var processorBatch = Vector.empty[PersistentRepr]
+  private val _persistenceId = extension.persistenceId(self)
+
+  private var processorBatch = Vector.empty[Resequenceable]
   private var sequenceNr: Long = 0L
 
   /**
    * Processor id. Defaults to this processor's path and can be overridden.
    */
-  def processorId: String = _processorId
+  @deprecated("Override `persistenceId: String` instead. Processor will be removed.", since = "2.3.4")
+  override def processorId: String = _persistenceId // TODO: remove processorId
 
   /**
-   * Returns `processorId`.
+   * Returns `persistenceId`.
    */
-  def snapshotterId: String = processorId
+  def snapshotterId: String = persistenceId
 
   /**
    * Returns `true` if this processor is currently recovering.
@@ -192,8 +214,9 @@ trait Processor extends Actor with Recovery {
    *
    * @param sequenceNr sequence number of the persistent message to be deleted.
    */
+  @deprecated("deleteMessage(sequenceNr) will be removed. Instead, validate before persist, and use deleteMessages for pruning.", since = "2.3.4")
   def deleteMessage(sequenceNr: Long): Unit = {
-    deleteMessage(sequenceNr, false)
+    deleteMessage(sequenceNr, permanent = false)
   }
 
   /**
@@ -207,8 +230,9 @@ trait Processor extends Actor with Recovery {
    * @param sequenceNr sequence number of the persistent message to be deleted.
    * @param permanent if `false`, the message is marked as deleted, otherwise it is permanently deleted.
    */
+  @deprecated("deleteMessage(sequenceNr) will be removed. Instead, validate before persist, and use deleteMessages for pruning.", since = "2.3.4")
   def deleteMessage(sequenceNr: Long, permanent: Boolean): Unit = {
-    journal ! DeleteMessages(List(PersistentIdImpl(processorId, sequenceNr)), permanent)
+    journal ! DeleteMessages(List(PersistentIdImpl(persistenceId, sequenceNr)), permanent)
   }
 
   /**
@@ -217,7 +241,7 @@ trait Processor extends Actor with Recovery {
    * @param toSequenceNr upper sequence number bound of persistent messages to be deleted.
    */
   def deleteMessages(toSequenceNr: Long): Unit = {
-    deleteMessages(toSequenceNr, true)
+    deleteMessages(toSequenceNr, permanent = true)
   }
 
   /**
@@ -229,37 +253,39 @@ trait Processor extends Actor with Recovery {
    * @param permanent if `false`, the message is marked as deleted, otherwise it is permanently deleted.
    */
   def deleteMessages(toSequenceNr: Long, permanent: Boolean): Unit = {
-    journal ! DeleteMessagesTo(processorId, toSequenceNr, permanent)
+    journal ! DeleteMessagesTo(persistenceId, toSequenceNr, permanent)
+  }
+
+  /**
+   * INTERNAL API
+   */
+  private[akka] def flushJournalBatch(): Unit = {
+    journal ! WriteMessages(processorBatch, self, instanceId)
+    processorBatch = Vector.empty
   }
 
   /**
    * INTERNAL API.
    */
-  final override protected[akka] def aroundPreStart(): Unit = {
-    try preStart() finally super.preStart()
+  override protected[akka] def aroundPostStop(): Unit = {
+    // calls `super.aroundPostStop` to allow Processor to be used as a stackable modification
+    try unstashAll(unstashFilterPredicate) finally super.aroundPostStop()
   }
 
   /**
    * INTERNAL API.
    */
-  final override protected[akka] def aroundPostStop(): Unit = {
-    try unstashAll(unstashFilterPredicate) finally postStop()
-  }
-
-  /**
-   * INTERNAL API.
-   */
-  final override protected[akka] def aroundPreRestart(reason: Throwable, message: Option[Any]): Unit = {
+  override protected[akka] def aroundPreRestart(reason: Throwable, message: Option[Any]): Unit = {
     try {
       receiverStash.prepend(processorBatch.map(p ⇒ Envelope(p, p.sender, context.system)))
       receiverStash.unstashAll()
       unstashAll(unstashFilterPredicate)
     } finally {
       message match {
-        case Some(WriteMessageSuccess(m)) ⇒ preRestartDefault(reason, Some(m))
-        case Some(LoopMessageSuccess(m))  ⇒ preRestartDefault(reason, Some(m))
-        case Some(ReplayedMessage(m))     ⇒ preRestartDefault(reason, Some(m))
-        case mo                           ⇒ preRestartDefault(reason, None)
+        case Some(WriteMessageSuccess(m, _)) ⇒ super.aroundPreRestart(reason, Some(m))
+        case Some(LoopMessageSuccess(m, _))  ⇒ super.aroundPreRestart(reason, Some(m))
+        case Some(ReplayedMessage(m))        ⇒ super.aroundPreRestart(reason, Some(m))
+        case mo                              ⇒ super.aroundPreRestart(reason, None)
       }
     }
   }
@@ -278,18 +304,29 @@ trait Processor extends Actor with Recovery {
    * a `Recover(lastSequenceNr)` message to `self` if `message` is defined, `Recover() otherwise`.
    */
   override def preRestart(reason: Throwable, message: Option[Any]): Unit = {
+    super.preRestart(reason, message)
     message match {
       case Some(_) ⇒ self ! Recover(toSequenceNr = lastSequenceNr)
       case None    ⇒ self ! Recover()
     }
   }
 
-  /**
-   * Calls [[preRestart]] and then `super.preRestart()`. If processor implementation classes want to
-   * opt out from stopping child actors, they should override this method and call [[preRestart]] only.
-   */
-  def preRestartDefault(reason: Throwable, message: Option[Any]): Unit = {
-    try preRestart(reason, message) finally super.preRestart(reason, message)
+  override def unhandled(message: Any): Unit = {
+    message match {
+      case RecoveryCompleted ⇒ // mute
+      case RecoveryFailure(cause) ⇒
+        val errorMsg = s"Processor killed after recovery failure (persisten id = [${persistenceId}]). " +
+          "To avoid killing processors on recovery failure, a processor must handle RecoveryFailure messages. " +
+          "RecoveryFailure was caused by: " + cause
+        throw new ActorKilledException(errorMsg)
+      case PersistenceFailure(payload, sequenceNumber, cause) ⇒
+        val errorMsg = "Processor killed after persistence failure " +
+          s"(persistent id = [${persistenceId}], sequence nr = [${sequenceNumber}], payload class = [${payload.getClass.getName}]). " +
+          "To avoid killing processors on persistence failure, a processor must handle PersistenceFailure messages. " +
+          "PersistenceFailure was caused by: " + cause
+        throw new ActorKilledException(errorMsg)
+      case m ⇒ super.unhandled(m)
+    }
   }
 
   private def nextSequenceNr(): Long = {
@@ -313,23 +350,26 @@ trait Processor extends Actor with Recovery {
  * @param cause failure cause.
  */
 @SerialVersionUID(1L)
-final case class PersistenceFailure(payload: Any, sequenceNr: Long, cause: Throwable)
+case class PersistenceFailure(payload: Any, sequenceNr: Long, cause: Throwable)
 
 /**
  * Sent to a [[Processor]] if a journal fails to replay messages or fetch that processor's
- * highest sequence number. If not handled, a [[RecoveryException]] is thrown by that
- * processor.
+ * highest sequence number. If not handled, the prossor will be stopped.
  */
 @SerialVersionUID(1L)
-final case class RecoveryFailure(cause: Throwable)
+case class RecoveryFailure(cause: Throwable)
 
+abstract class RecoveryCompleted
 /**
- * Thrown by a [[Processor]] if a journal fails to replay messages or fetch that processor's
- * highest sequence number. This exception is only thrown if that processor doesn't handle
- * [[RecoveryFailure]] messages.
+ * Sent to a [[Processor]] when the journal replay has been finished.
  */
 @SerialVersionUID(1L)
-final case class RecoveryException(message: String, cause: Throwable) extends AkkaException(message, cause)
+case object RecoveryCompleted extends RecoveryCompleted {
+  /**
+   * Java API: get the singleton instance
+   */
+  def getInstance = this
+}
 
 /**
  * Java API: an actor that persists (journals) messages of type [[Persistent]]. Messages of other types
@@ -385,31 +425,27 @@ final case class RecoveryException(message: String, cause: Throwable) extends Ak
  * @see [[Recover]]
  * @see [[PersistentBatch]]
  */
+@deprecated("UntypedProcessor will be removed. Instead extend `akka.persistence.UntypedPersistentActor` and use it's `persistAsync(command)(callback)` method to get equivalent semantics.", since = "2.3.4")
 abstract class UntypedProcessor extends UntypedActor with Processor
 
 /**
- * Java API: compatible with lambda expressions (to be used with [[akka.japi.pf.ReceiveBuilder]]).
+ * Java API: compatible with lambda expressions
+ *
  * An actor that persists (journals) messages of type [[Persistent]]. Messages of other types
  * are not persisted.
- *
- * {{{
- * import akka.persistence.AbstractProcessor;
- * import akka.persistence.Persistent;
- * import akka.actor.ActorRef;
- * import akka.actor.Props;
- * import akka.japi.pf.ReceiveBuilder;
- * import scala.PartialFunction;
- * import scala.runtime.BoxedUnit;
- *
+ * <p/>
+ * Example:
+ * <pre>
  * class MyProcessor extends AbstractProcessor {
- *     public PartialFunction<Object, BoxedUnit> receive() {
- *         return ReceiveBuilder.
- *             match(Persistent.class, p -> {
- *                 Object payload = p.payload();
- *                 Long sequenceNr = p.sequenceNr();
+ *   public MyProcessor() {
+ *     receive(ReceiveBuilder.
+ *       match(Persistent.class, p -> {
+ *         Object payload = p.payload();
+ *         Long sequenceNr = p.sequenceNr();
  *                 // ...
- *             }).build();
- *     }
+ *       }).build()
+ *     );
+ *   }
  * }
  *
  * // ...
@@ -418,7 +454,7 @@ abstract class UntypedProcessor extends UntypedActor with Processor
  *
  * processor.tell(Persistent.create("foo"), null);
  * processor.tell("bar", null);
- * }}}
+ * </pre>
  *
  * During start and restart, persistent messages are replayed to a processor so that it can recover internal
  * state from these messages. New messages sent to a processor during recovery do not interfere with replayed
@@ -444,4 +480,5 @@ abstract class UntypedProcessor extends UntypedActor with Processor
  * @see [[Recover]]
  * @see [[PersistentBatch]]
  */
+@deprecated("AbstractProcessor will be removed. Instead extend `akka.persistence.AbstractPersistentActor` and use it's `persistAsync(command)(callback)` method to get equivalent semantics.", since = "2.3.4")
 abstract class AbstractProcessor extends AbstractActor with Processor

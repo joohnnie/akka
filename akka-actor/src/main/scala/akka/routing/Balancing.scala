@@ -66,14 +66,13 @@ private[akka] final class BalancingRoutingLogic extends RoutingLogic {
  */
 @SerialVersionUID(1L)
 final case class BalancingPool(
-  override val nrOfInstances: Int,
+  nrOfInstances: Int,
   override val supervisorStrategy: SupervisorStrategy = Pool.defaultSupervisorStrategy,
   override val routerDispatcher: String = Dispatchers.DefaultDispatcherId)
   extends Pool {
 
   def this(config: Config) =
-    this(
-      nrOfInstances = config.getInt("nr-of-instances"))
+    this(nrOfInstances = config.getInt("nr-of-instances"))
 
   /**
    * Java API
@@ -94,12 +93,17 @@ final case class BalancingPool(
    */
   def withDispatcher(dispatcherId: String): BalancingPool = copy(routerDispatcher = dispatcherId)
 
+  def nrOfInstances(sys: ActorSystem) = this.nrOfInstances
+
   /**
    * INTERNAL API
    */
   override private[akka] def newRoutee(routeeProps: Props, context: ActorContext): Routee = {
 
-    val deployPath = context.self.path.elements.drop(1).mkString("/", "/", "")
+    val rawDeployPath = context.self.path.elements.drop(1).mkString("/", "/", "")
+    val deployPath = BalancingPool.invalidConfigKeyChars.foldLeft(rawDeployPath) { (replaced, c) ⇒
+      replaced.replace(c, '_')
+    }
     val dispatcherId = s"BalancingPool-$deployPath"
     def dispatchers = context.system.dispatchers
 
@@ -147,3 +151,6 @@ final case class BalancingPool(
 
 }
 
+object BalancingPool {
+  private val invalidConfigKeyChars = List('$', '@', ':')
+}

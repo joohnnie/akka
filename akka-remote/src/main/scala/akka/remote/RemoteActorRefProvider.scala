@@ -135,7 +135,7 @@ private[akka] class RemoteActorRefProvider(
   override def rootGuardian: InternalActorRef = local.rootGuardian
   override def guardian: LocalActorRef = local.guardian
   override def systemGuardian: LocalActorRef = local.systemGuardian
-  override def terminationFuture: Future[Unit] = local.terminationFuture
+  override def terminationFuture: Future[Terminated] = local.terminationFuture
   override def registerTempActor(actorRef: InternalActorRef, path: ActorPath): Unit = local.registerTempActor(actorRef, path)
   override def unregisterTempActor(path: ActorPath): Unit = local.unregisterTempActor(path)
   override def tempPath(): ActorPath = local.tempPath()
@@ -178,7 +178,7 @@ private[akka] class RemoteActorRefProvider(
     _internals = internals
     remotingTerminator ! internals
 
-    _log = Logging(eventStream, "RemoteActorRefProvider")
+    _log = Logging(eventStream, getClass.getName)
 
     // this enables reception of remote requests
     transport.start()

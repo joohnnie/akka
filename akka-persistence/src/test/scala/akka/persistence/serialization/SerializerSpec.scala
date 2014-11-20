@@ -5,13 +5,17 @@
 package akka.persistence.serialization
 
 import scala.collection.immutable
-
 import com.typesafe.config._
-
 import akka.actor._
 import akka.persistence._
 import akka.serialization._
 import akka.testkit._
+
+import akka.persistence.AtLeastOnceDelivery.AtLeastOnceDeliverySnapshot
+import akka.persistence.AtLeastOnceDelivery.UnconfirmedDelivery
+import scala.concurrent.Await
+import scala.concurrent.duration.Duration
+import org.apache.commons.codec.binary.Hex.decodeHex
 
 object SerializerSpecConfigs {
   val customSerializers = ConfigFactory.parseString(
@@ -65,6 +69,27 @@ class SnapshotSerializerPersistenceSpec extends AkkaSpec(customSerializers) {
       val deserialized = serializer.fromBinary(bytes, None)
 
       deserialized should be(Snapshot(MySnapshot(".a.")))
+    }
+
+    "be able to read snapshot created with akka 2.3.6" in {
+      val dataStr = "abc"
+      val snapshot = Snapshot(dataStr.getBytes("utf-8"))
+      val serializer = serialization.findSerializerFor(snapshot)
+
+      // the oldSnapshot was created with Akka 2.3.6 and it is using JavaSerialization
+      // for the SnapshotHeader. See issue #16009.
+      // It was created with:
+      // println(s"encoded snapshot: " + String.valueOf(encodeHex(serializer.toBinary(snapshot))))
+      val oldSnapshot = "a8000000aced00057372002d616b6b612e70657273697374656e63652e73657269616c697a6174696f6e" +
+        "2e536e617073686f74486561646572000000000000000102000249000c73657269616c697a657249644c00086d616e696665" +
+        "737474000e4c7363616c612f4f7074696f6e3b7870000000047372000b7363616c612e4e6f6e6524465024f653ca94ac0200" +
+        "007872000c7363616c612e4f7074696f6ee36024a8328a45e90200007870616263"
+
+      val bytes = decodeHex(oldSnapshot.toCharArray)
+      val deserialized = serializer.fromBinary(bytes, None).asInstanceOf[Snapshot]
+
+      val deserializedDataStr = new String(deserialized.data.asInstanceOf[Array[Byte]], "utf-8")
+      dataStr should be(deserializedDataStr)
     }
   }
 }
@@ -133,23 +158,52 @@ class MessageSerializerPersistenceSpec extends AkkaSpec(customSerializers) {
         deserialized should be(confirmation)
       }
     }
+
+    "given AtLeastOnceDeliverySnapshot" must {
+      "handle empty unconfirmed" in {
+        val unconfirmed = Vector.empty
+        val snap = AtLeastOnceDeliverySnapshot(13, unconfirmed)
+        val serializer = serialization.findSerializerFor(snap)
+
+        val bytes = serializer.toBinary(snap)
+        val deserialized = serializer.fromBinary(bytes, Some(classOf[AtLeastOnceDeliverySnapshot]))
+
+        deserialized should be(snap)
+      }
+
+      "handle a few unconfirmed" in {
+        val unconfirmed = Vector(
+          UnconfirmedDelivery(deliveryId = 1, destination = testActor.path, "a"),
+          UnconfirmedDelivery(deliveryId = 2, destination = testActor.path, "b"),
+          UnconfirmedDelivery(deliveryId = 3, destination = testActor.path, 42))
+        val snap = AtLeastOnceDeliverySnapshot(17, unconfirmed)
+        val serializer = serialization.findSerializerFor(snap)
+
+        val bytes = serializer.toBinary(snap)
+        val deserialized = serializer.fromBinary(bytes, Some(classOf[AtLeastOnceDeliverySnapshot]))
+
+        deserialized should be(snap)
+      }
+
+    }
+
   }
 }
 
 object MessageSerializerRemotingSpec {
   class LocalActor(port: Int) extends Actor {
     def receive = {
-      case m ⇒ context.actorSelection(s"akka.tcp://remote@127.0.0.1:${port}/user/remote") tell (m, sender)
+      case m ⇒ context.actorSelection(s"akka.tcp://remote@127.0.0.1:${port}/user/remote") tell (m, sender())
     }
   }
 
   class RemoteActor extends Actor {
     def receive = {
-      case PersistentBatch(Persistent(MyPayload(data), _) +: tail) ⇒ sender ! s"b${data}"
-      case ConfirmablePersistent(MyPayload(data), _, _)            ⇒ sender ! s"c${data}"
-      case Persistent(MyPayload(data), _)                          ⇒ sender ! s"p${data}"
-      case DeliveredByChannel(pid, cid, msnr, dsnr, ep)            ⇒ sender ! s"${pid},${cid},${msnr},${dsnr},${ep.path.name.startsWith("testActor")}"
-      case DeliveredByPersistentChannel(cid, msnr, dsnr, ep)       ⇒ sender ! s"${cid},${msnr},${dsnr},${ep.path.name.startsWith("testActor")}"
+      case PersistentBatch(Persistent(MyPayload(data), _) +: tail) ⇒ sender() ! s"b${data}"
+      case ConfirmablePersistent(MyPayload(data), _, _)            ⇒ sender() ! s"c${data}"
+      case Persistent(MyPayload(data), _)                          ⇒ sender() ! s"p${data}"
+      case DeliveredByChannel(pid, cid, msnr, dsnr, ep)            ⇒ sender() ! s"${pid},${cid},${msnr},${dsnr},${ep.path.name.startsWith("testActor")}"
+      case DeliveredByPersistentChannel(cid, msnr, dsnr, ep)       ⇒ sender() ! s"${cid},${msnr},${dsnr},${ep.path.name.startsWith("testActor")}"
       case Deliver(Persistent(payload, _), dp)                     ⇒ context.actorSelection(dp) ! payload
     }
   }
@@ -172,8 +226,7 @@ class MessageSerializerRemotingSpec extends AkkaSpec(remote.withFallback(customS
   }
 
   override def afterTermination() {
-    remoteSystem.shutdown()
-    remoteSystem.awaitTermination()
+    Await.ready(remoteSystem.terminate(), Duration.Inf)
   }
 
   "A message serializer" must {

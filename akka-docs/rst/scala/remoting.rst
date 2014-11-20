@@ -4,16 +4,16 @@
  Remoting
 ##########
 
-
 For an introduction of remoting capabilities of Akka please see :ref:`remoting`.
 
 .. note::
 
   As explained in that chapter Akka remoting is designed for communication in a
   peer-to-peer fashion and it has limitations for client-server setups. In
-  particular Akka Remoting does not work with Network Address Translation and
-  Load Balancers, among others.
-
+  particular Akka Remoting does not work transparently with Network Address Translation,
+  Load Balancers, or in Docker containers. For symmetric communication in these situations
+  network and/or Akka configuration will have to be changed as described in
+  :ref:`symmetric-communication`.
 
 Preparing your ActorSystem for Remoting
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -78,7 +78,7 @@ As you can see from the example above the following pattern is used to find an a
 
   akka.<protocol>://<actor system>@<hostname>:<port>/<actor path>
 
-Once you obtained a selection to the actor you can interact with it they same way you would with a local actor, e.g.::
+Once you obtained a selection to the actor you can interact with it in the same way you would with a local actor, e.g.::
 
   selection ! "Pretty awesome feature"
 
@@ -171,7 +171,7 @@ Lifecycle and Failure Recovery Model
    :align: center
    :width: 620
 
-Each link with  link with a remote system can be in one of the four states as illustrated above. Before any communication
+Each link with a remote system can be in one of the four states as illustrated above. Before any communication
 happens with a remote system at a given ``Address`` the state of the association is ``Idle``. The first time a message
 is attempted to be sent to the remote system or an inbound connection is accepted the state of the link transitions to
 ``Active`` denoting that the two systems has messages to send or receive and no failures were encountered so far.
@@ -294,7 +294,7 @@ Pluggable transport support
 ---------------------------
 
 Akka can be configured to use various transports to communicate with remote systems. The core
-component of this feature is the :meth:`akka.remote.Transport` SPI. Transport implementations must extend this trait.
+component of this feature is the :meth:`akka.remote.transport.Transport` SPI. Transport implementations must extend this trait.
 Transports can be loaded by setting the ``akka.remote.enabled-transports`` configuration key to point to one or
 more configuration sections containing driver descriptions.
 
@@ -492,11 +492,8 @@ and related resources for troubleshooting.
 Remote Configuration
 ^^^^^^^^^^^^^^^^^^^^
 
-There are lots of configuration properties that are related to remoting in Akka. We refer to the following
-reference file for more information:
-
-.. literalinclude:: ../../../akka-remote/src/main/resources/reference.conf
-   :language: none
+There are lots of configuration properties that are related to remoting in Akka. We refer to the 
+:ref:`reference configuration <config-akka-remote>` for more information.
 
 .. note::
 

@@ -15,6 +15,7 @@ import akka.actor.Props
 import akka.event.Logging
 import akka.event.Logging.LogLevel
 import akka.ConfigurationException
+import java.util.Locale
 
 final class RemoteSettings(val config: Config) {
   import config._
@@ -29,7 +30,7 @@ final class RemoteSettings(val config: Config) {
   val TrustedSelectionPaths: Set[String] =
     immutableSeq(getStringList("akka.remote.trusted-selection-paths")).toSet
 
-  val RemoteLifecycleEventsLogLevel: LogLevel = getString("akka.remote.log-remote-lifecycle-events").toLowerCase() match {
+  val RemoteLifecycleEventsLogLevel: LogLevel = getString("akka.remote.log-remote-lifecycle-events").toLowerCase(Locale.ROOT) match {
     case "on" ⇒ Logging.DebugLevel
     case other ⇒ Logging.levelFor(other) match {
       case Some(level) ⇒ level
@@ -62,6 +63,14 @@ final class RemoteSettings(val config: Config) {
   val BackoffPeriod: FiniteDuration = {
     config.getMillisDuration("akka.remote.backoff-interval")
   } requiring (_ > Duration.Zero, "backoff-interval must be > 0")
+
+  val LogBufferSizeExceeding: Int = {
+    val key = "akka.remote.log-buffer-size-exceeding"
+    config.getString(key).toLowerCase match {
+      case "off" | "false" ⇒ Int.MaxValue
+      case _               ⇒ config.getInt(key)
+    }
+  }
 
   val SysMsgAckTimeout: FiniteDuration = {
     config.getMillisDuration("akka.remote.system-message-ack-piggyback-timeout")

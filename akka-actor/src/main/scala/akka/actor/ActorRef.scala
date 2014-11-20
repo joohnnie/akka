@@ -57,7 +57,7 @@ object ActorRef {
  * {{{
  * import static akka.pattern.Patterns.ask;
  *
- * public class ExampleActor Extends UntypedActor {
+ * public class ExampleActor extends UntypedActor {
  *   // this child will be destroyed and re-created upon restart by default
  *   final ActorRef other = getContext().actorOf(Props.create(OtherActor.class), "childName");
  *
@@ -115,7 +115,7 @@ abstract class ActorRef extends java.lang.Comparable[ActorRef] with Serializable
   }
 
   /**
-   * Sends the specified message to the sender, i.e. fire-and-forget
+   * Sends the specified message to this ActorRef, i.e. fire-and-forget
    * semantics, including the sender reference if possible.
    *
    * Pass [[akka.actor.ActorRef$.noSender]] or `null` as sender if there is nobody to reply to
@@ -274,6 +274,19 @@ private[akka] abstract class ActorRefWithCell extends InternalActorRef { this: A
 private[akka] case object Nobody extends MinimalActorRef {
   override val path: RootActorPath = new RootActorPath(Address("akka", "all-systems"), "/Nobody")
   override def provider = throw new UnsupportedOperationException("Nobody does not provide")
+
+  private val serialized = new SerializedNobody
+
+  @throws(classOf[java.io.ObjectStreamException])
+  override protected def writeReplace(): AnyRef = serialized
+}
+
+/**
+ * INTERNAL API
+ */
+@SerialVersionUID(1L) private[akka] class SerializedNobody extends Serializable {
+  @throws(classOf[java.io.ObjectStreamException])
+  private def readResolve(): AnyRef = Nobody
 }
 
 /**
@@ -504,7 +517,8 @@ private[akka] class EmptyLocalActorRef(override val provider: ActorRefProvider,
       true
     case sel: ActorSelectionMessage ⇒
       sel.identifyRequest match {
-        case Some(identify) ⇒ sender ! ActorIdentity(identify.messageId, None)
+        case Some(identify) ⇒
+          if (!sel.wildcardFanOut) sender ! ActorIdentity(identify.messageId, None)
         case None ⇒
           eventStream.publish(DeadLetter(sel.msg, if (sender eq Actor.noSender) provider.deadLetters else sender, this))
       }
@@ -525,7 +539,7 @@ private[akka] class DeadLetterActorRef(_provider: ActorRefProvider,
 
   override def !(message: Any)(implicit sender: ActorRef = this): Unit = message match {
     case null                ⇒ throw new InvalidMessageException("Message is null")
-    case Identify(messageId) ⇒ sender ! ActorIdentity(messageId, Some(this))
+    case Identify(messageId) ⇒ sender ! ActorIdentity(messageId, None)
     case d: DeadLetter       ⇒ if (!specialHandle(d.message, d.sender)) eventStream.publish(d)
     case _ ⇒ if (!specialHandle(message, sender))
       eventStream.publish(DeadLetter(message, if (sender eq Actor.noSender) provider.deadLetters else sender, this))
@@ -564,6 +578,7 @@ private[akka] class VirtualPathContainer(
         // this can happen from RemoteSystemDaemon if a new child is created
         // before the old is removed from RemoteSystemDaemon children
         log.debug("{} replacing child {} ({} -> {})", path, name, old, ref)
+        old.stop()
     }
   }
 

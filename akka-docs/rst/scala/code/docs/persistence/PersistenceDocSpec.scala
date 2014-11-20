@@ -4,12 +4,12 @@
 
 package docs.persistence
 
+import akka.actor.{ Actor, ActorSystem, Props }
+import akka.persistence._
+import com.typesafe.config.ConfigFactory
+
 import scala.concurrent.duration._
 import scala.language.postfixOps
-
-import akka.actor.{ Actor, ActorSystem }
-import akka.persistence._
-
 trait PersistenceDocSpec {
   val config =
     """
@@ -21,21 +21,23 @@ trait PersistenceDocSpec {
       //#auto-update
     """
 
-  val system: ActorSystem
+  trait SomeOtherMessage
+
+  implicit val system: ActorSystem
 
   import system._
 
   new AnyRef {
     //#definition
-    import akka.persistence.{ Persistent, PersistenceFailure, Processor }
+    import akka.persistence.{ PersistenceFailure, Persistent, Processor }
 
     class MyProcessor extends Processor {
       def receive = {
-        case Persistent(payload, sequenceNr) =>
+        case Persistent(payload, sequenceNr)                =>
         // message successfully written to journal
         case PersistenceFailure(payload, sequenceNr, cause) =>
         // message failed to be written to journal
-        case other =>
+        case m: SomeOtherMessage                            =>
         // message not written to journal
       }
     }
@@ -56,7 +58,7 @@ trait PersistenceDocSpec {
   }
 
   new AnyRef {
-    trait MyProcessor1 extends Processor {
+    trait MyProcessor1 extends PersistentActor {
       //#recover-on-start-disabled
       override def preStart() = ()
       //#recover-on-start-disabled
@@ -65,7 +67,7 @@ trait PersistenceDocSpec {
       //#recover-on-restart-disabled
     }
 
-    trait MyProcessor2 extends Processor {
+    trait MyProcessor2 extends PersistentActor {
       //#recover-on-start-custom
       override def preStart() {
         self ! Recover(toSequenceNr = 457L)
@@ -73,7 +75,7 @@ trait PersistenceDocSpec {
       //#recover-on-start-custom
     }
 
-    trait MyProcessor3 extends Processor {
+    trait MyProcessor3 extends PersistentActor {
       //#deletion
       override def preRestart(reason: Throwable, message: Option[Any]) {
         message match {
@@ -84,13 +86,35 @@ trait PersistenceDocSpec {
       }
       //#deletion
     }
+
+    class MyProcessor4 extends PersistentActor {
+      override def persistenceId = "my-stable-persistence-id"
+
+      //#recovery-completed
+
+      def receiveRecover: Receive = {
+        case RecoveryCompleted => recoveryCompleted()
+        case evt               => //...
+      }
+
+      def receiveCommand: Receive = {
+        case msg => //...
+      }
+
+      def recoveryCompleted(): Unit = {
+        // perform init after recovery, before any other messages
+        // ...
+      }
+
+      //#recovery-completed
+    }
   }
 
   new AnyRef {
     trait ProcessorMethods {
-      //#processor-id
-      def processorId: String
-      //#processor-id
+      //#persistence-id
+      def persistenceId: String
+      //#persistence-id
       //#recovery-status
       def recoveryRunning: Boolean
       def recoveryFinished: Boolean
@@ -100,13 +124,55 @@ trait PersistenceDocSpec {
       //#current-message
     }
     class MyProcessor1 extends Processor with ProcessorMethods {
-      //#processor-id-override
-      override def processorId = "my-stable-processor-id"
-      //#processor-id-override
+      //#persistence-id-override
+      override def persistenceId = "my-stable-persistence-id"
+      //#persistence-id-override
       def receive = {
         case _ =>
       }
     }
+  }
+
+  new AnyRef {
+    //#at-least-once-example
+    import akka.actor.{ Actor, ActorPath }
+    import akka.persistence.AtLeastOnceDelivery
+
+    case class Msg(deliveryId: Long, s: String)
+    case class Confirm(deliveryId: Long)
+
+    sealed trait Evt
+    case class MsgSent(s: String) extends Evt
+    case class MsgConfirmed(deliveryId: Long) extends Evt
+
+    class MyPersistentActor(destination: ActorPath)
+      extends PersistentActor with AtLeastOnceDelivery {
+
+      def receiveCommand: Receive = {
+        case s: String           => persist(MsgSent(s))(updateState)
+        case Confirm(deliveryId) => persist(MsgConfirmed(deliveryId))(updateState)
+      }
+
+      def receiveRecover: Receive = {
+        case evt: Evt => updateState(evt)
+      }
+
+      def updateState(evt: Evt): Unit = evt match {
+        case MsgSent(s) =>
+          deliver(destination, deliveryId => Msg(deliveryId, s))
+
+        case MsgConfirmed(deliveryId) => confirmDelivery(deliveryId)
+      }
+    }
+
+    class MyDestination extends Actor {
+      def receive = {
+        case Msg(deliveryId, s) =>
+          // ...
+          sender() ! Confirm(deliveryId)
+      }
+    }
+    //#at-least-once-example
   }
 
   new AnyRef {
@@ -149,7 +215,7 @@ trait PersistenceDocSpec {
       def receive = {
         case p @ Persistent(payload, _) =>
           //#channel-example-reply
-          channel ! Deliver(p.withPayload(s"processed ${payload}"), sender.path)
+          channel ! Deliver(p.withPayload(s"processed ${payload}"), sender().path)
         //#channel-example-reply
       }
 
@@ -186,7 +252,7 @@ trait PersistenceDocSpec {
   new AnyRef {
     //#fsm-example
     import akka.actor.FSM
-    import akka.persistence.{ Processor, Persistent }
+    import akka.persistence.{ Persistent, Processor }
 
     class PersistentDoor extends Processor with FSM[String, Int] {
       startWith("closed", 0)
@@ -256,7 +322,7 @@ trait PersistenceDocSpec {
 
     processor ! PersistentBatch(List(Persistent("a"), Persistent("b")))
     //#batch-write
-    system.shutdown()
+    system.terminate()
   }
 
   new AnyRef {
@@ -285,8 +351,10 @@ trait PersistenceDocSpec {
     import akka.actor.ActorRef
 
     //#reliable-event-delivery
-    class MyEventsourcedProcessor(destination: ActorRef) extends EventsourcedProcessor {
+    class MyPersistentActor(destination: ActorRef) extends PersistentActor {
       val channel = context.actorOf(Channel.props("channel"))
+
+      override def persistenceId = "my-stable-persistence-id"
 
       def handleEvent(event: String) = {
         // update state
@@ -308,15 +376,96 @@ trait PersistenceDocSpec {
     }
     //#reliable-event-delivery
   }
+
+  new AnyRef {
+
+    val processor = system.actorOf(Props[MyPersistentActor]())
+
+    //#persist-async
+    class MyPersistentActor extends PersistentActor {
+
+      override def persistenceId = "my-stable-persistence-id"
+
+      def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+
+      def receiveCommand: Receive = {
+        case c: String => {
+          sender() ! c
+          persistAsync(s"evt-$c-1") { e => sender() ! e }
+          persistAsync(s"evt-$c-2") { e => sender() ! e }
+        }
+      }
+    }
+
+    // usage
+    processor ! "a"
+    processor ! "b"
+
+    // possible order of received messages:
+    // a
+    // b
+    // evt-a-1
+    // evt-a-2
+    // evt-b-1
+    // evt-b-2
+
+    //#persist-async
+  }
+  new AnyRef {
+
+    val processor = system.actorOf(Props[MyPersistentActor]())
+
+    //#defer
+    class MyPersistentActor extends PersistentActor {
+
+      override def persistenceId = "my-stable-persistence-id"
+
+      def receiveRecover: Receive = {
+        case _ => // handle recovery here
+      }
+
+      def receiveCommand: Receive = {
+        case c: String => {
+          sender() ! c
+          persistAsync(s"evt-$c-1") { e => sender() ! e }
+          persistAsync(s"evt-$c-2") { e => sender() ! e }
+          defer(s"evt-$c-3") { e => sender() ! e }
+        }
+      }
+    }
+    //#defer
+
+    //#defer-caller
+    processor ! "a"
+    processor ! "b"
+
+    // order of received messages:
+    // a
+    // b
+    // evt-a-1
+    // evt-a-2
+    // evt-a-3
+    // evt-b-1
+    // evt-b-2
+    // evt-b-3
+
+    //#defer-caller
+  }
   new AnyRef {
     import akka.actor.Props
 
     //#view
-    class MyView extends View {
-      def processorId: String = "some-processor-id"
+    class MyView extends PersistentView {
+      override def persistenceId: String = "some-persistence-id"
+      override def viewId: String = "some-persistence-id-view"
 
       def receive: Actor.Receive = {
-        case Persistent(payload, sequenceNr) => // ...
+        case payload if isPersistent =>
+        // handle message from journal...
+        case payload                 =>
+        // handle message from user-land...
       }
     }
     //#view
@@ -326,4 +475,5 @@ trait PersistenceDocSpec {
     view ! Update(await = true)
     //#view-update
   }
+
 }

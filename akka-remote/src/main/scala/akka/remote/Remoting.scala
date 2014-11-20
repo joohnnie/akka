@@ -49,6 +49,14 @@ private[remote] object RARP extends ExtensionId[RARP] with ExtensionIdProvider {
 
 /**
  * INTERNAL API
+ * Messages marked with this trait will be sent before other messages when buffering is active.
+ * This means that these messages don't obey normal message ordering.
+ * It is used for failure detector heartbeat messages.
+ */
+private[akka] trait PriorityMessage
+
+/**
+ * INTERNAL API
  */
 private[remote] object Remoting {
 
@@ -121,7 +129,7 @@ private[remote] class Remoting(_system: ExtendedActorSystem, _provider: RemoteAc
 
   override def localAddressForRemote(remote: Address): Address = Remoting.localAddressForRemote(transportMapping, remote)
 
-  val log: LoggingAdapter = Logging(system.eventStream, "Remoting")
+  val log: LoggingAdapter = Logging(system.eventStream, getClass.getName)
   val eventPublisher = new EventPublisher(system, log, RemoteLifecycleEventsLogLevel)
 
   private def notifyError(msg: String, cause: Throwable): Unit =
@@ -187,7 +195,7 @@ private[remote] class Remoting(_system: ExtendedActorSystem, _provider: RemoteAc
 
         } catch {
           case e: TimeoutException ⇒
-            notifyError("Startup timed out", e)
+            notifyError("Startup timed out. This is usually related to actor system host setting or host name resolution misconfiguration.", e)
             throw e
           case NonFatal(e) ⇒
             notifyError("Startup failed", e)
@@ -221,6 +229,12 @@ private[remote] class Remoting(_system: ExtendedActorSystem, _provider: RemoteAc
   // Not used anywhere only to keep compatibility with RemoteTransport interface
   protected def useUntrustedMode: Boolean = provider.remoteSettings.UntrustedMode
 
+  private[akka] def boundAddresses: Map[String, Set[Address]] = {
+    transportMapping.map {
+      case (scheme, transports) ⇒
+        scheme -> transports.map { case (transport, _) ⇒ transport.boundAddress }
+    }
+  }
 }
 
 /**
@@ -265,7 +279,7 @@ private[remote] object EndpointManager {
      */
     def isTombstone: Boolean
   }
-  final case class Pass(endpoint: ActorRef) extends EndpointPolicy {
+  final case class Pass(endpoint: ActorRef, uid: Option[Int], refuseUid: Option[Int]) extends EndpointPolicy {
     override def isTombstone: Boolean = false
   }
   final case class Gated(timeOfRelease: Deadline) extends EndpointPolicy {
@@ -282,13 +296,21 @@ private[remote] object EndpointManager {
     private var addressToReadonly = HashMap[Address, ActorRef]()
     private var readonlyToAddress = HashMap[ActorRef, Address]()
 
-    def registerWritableEndpoint(address: Address, endpoint: ActorRef): ActorRef = addressToWritable.get(address) match {
-      case Some(Pass(e)) ⇒
-        throw new IllegalArgumentException(s"Attempting to overwrite existing endpoint [$e] with [$endpoint]")
-      case _ ⇒
-        addressToWritable += address -> Pass(endpoint)
-        writableToAddress += endpoint -> address
-        endpoint
+    def registerWritableEndpoint(address: Address, uid: Option[Int], refuseUid: Option[Int], endpoint: ActorRef): ActorRef =
+      addressToWritable.get(address) match {
+        case Some(Pass(e, _, _)) ⇒
+          throw new IllegalArgumentException(s"Attempting to overwrite existing endpoint [$e] with [$endpoint]")
+        case _ ⇒
+          addressToWritable += address -> Pass(endpoint, uid, refuseUid)
+          writableToAddress += endpoint -> address
+          endpoint
+      }
+
+    def registerWritableEndpointUid(remoteAddress: Address, uid: Int): Unit = {
+      addressToWritable.get(remoteAddress) match {
+        case Some(Pass(ep, _, refuseUid)) ⇒ addressToWritable += remoteAddress -> Pass(ep, Some(uid), refuseUid)
+        case other                        ⇒ // the GotUid might have lost the race with some failure
+      }
     }
 
     def registerReadOnlyEndpoint(address: Address, endpoint: ActorRef): ActorRef = {
@@ -313,8 +335,8 @@ private[remote] object EndpointManager {
     def writableEndpointWithPolicyFor(address: Address): Option[EndpointPolicy] = addressToWritable.get(address)
 
     def hasWritableEndpointFor(address: Address): Boolean = writableEndpointWithPolicyFor(address) match {
-      case Some(Pass(_)) ⇒ true
-      case _             ⇒ false
+      case Some(Pass(_, _, _)) ⇒ true
+      case _                   ⇒ false
     }
 
     def readOnlyEndpointFor(address: Address): Option[ActorRef] = addressToReadonly.get(address)
@@ -324,8 +346,18 @@ private[remote] object EndpointManager {
     def isReadOnly(endpoint: ActorRef): Boolean = readonlyToAddress contains endpoint
 
     def isQuarantined(address: Address, uid: Int): Boolean = writableEndpointWithPolicyFor(address) match {
-      case Some(Quarantined(`uid`, timeOfRelease)) ⇒ timeOfRelease.hasTimeLeft()
-      case _                                       ⇒ false
+      // timeOfRelease is only used for garbage collection. If an address is still probed, we should report the
+      // known fact that it is quarantined.
+      case Some(Quarantined(`uid`, _)) ⇒ true
+      case _                           ⇒ false
+    }
+
+    def refuseUid(address: Address): Option[Int] = writableEndpointWithPolicyFor(address) match {
+      // timeOfRelease is only used for garbage collection. If an address is still probed, we should report the
+      // known fact that it is quarantined.
+      case Some(Quarantined(uid, _))   ⇒ Some(uid)
+      case Some(Pass(_, _, refuseUid)) ⇒ refuseUid
+      case _                           ⇒ None
     }
 
     /**
@@ -387,22 +419,43 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
   else None
 
   var pendingReadHandoffs = Map[ActorRef, AkkaProtocolHandle]()
+  var stashedInbound = Map[ActorRef, Vector[InboundAssociation]]()
+
+  def handleStashedInbound(endpoint: ActorRef) {
+    val stashed = stashedInbound.getOrElse(endpoint, Vector.empty)
+    stashedInbound -= endpoint
+    stashed foreach (handleInboundAssociation _)
+  }
+
+  def keepQuarantinedOr(remoteAddress: Address)(body: ⇒ Unit): Unit = endpoints.refuseUid(remoteAddress) match {
+    case Some(uid) ⇒
+      log.info("Quarantined address [{}] is still unreachable or has not been restarted. Keeping it quarantined.", remoteAddress)
+      // Restoring Quarantine marker overwritten by a Pass(endpoint, refuseUid) pair while probing remote system.
+      endpoints.markAsQuarantined(remoteAddress, uid, Deadline.now + settings.QuarantineDuration)
+    case None ⇒ body
+  }
 
   override val supervisorStrategy =
     OneForOneStrategy(loggingEnabled = false) {
       case e @ InvalidAssociation(localAddress, remoteAddress, reason) ⇒
-        log.warning("Tried to associate with unreachable remote address [{}]. " +
-          "Address is now gated for {} ms, all messages to this address will be delivered to dead letters. Reason: {}",
-          remoteAddress, settings.RetryGateClosedFor.toMillis, reason.getMessage)
-        endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        keepQuarantinedOr(remoteAddress) {
+          val causedBy = if (reason.getCause == null) "" else s"Caused by: [${reason.getCause.getMessage}]"
+          log.warning("Tried to associate with unreachable remote address [{}]. " +
+            "Address is now gated for {} ms, all messages to this address will be delivered to dead letters. " +
+            "Reason: [{}] {}",
+            remoteAddress, settings.RetryGateClosedFor.toMillis, reason.getMessage, causedBy)
+          endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        }
         AddressTerminatedTopic(context.system).publish(AddressTerminated(remoteAddress))
         Stop
 
       case ShutDownAssociation(localAddress, remoteAddress, _) ⇒
-        log.debug("Remote system with address [{}] has shut down. " +
-          "Address is now gated for {} ms, all messages to this address will be delivered to dead letters.",
-          remoteAddress, settings.RetryGateClosedFor.toMillis)
-        endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        keepQuarantinedOr(remoteAddress) {
+          log.debug("Remote system with address [{}] has shut down. " +
+            "Address is now gated for {} ms, all messages to this address will be delivered to dead letters.",
+            remoteAddress, settings.RetryGateClosedFor.toMillis)
+          endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        }
         AddressTerminatedTopic(context.system).publish(AddressTerminated(remoteAddress))
         Stop
 
@@ -417,10 +470,12 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
         Stop
 
       case HopelessAssociation(localAddress, remoteAddress, None, _) ⇒
-        log.warning("Association to [{}] with unknown UID is irrecoverably failed. " +
-          "Address cannot be quarantined without knowing the UID, gating instead for {} ms.",
-          remoteAddress, settings.RetryGateClosedFor.toMillis)
-        endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        keepQuarantinedOr(remoteAddress) {
+          log.warning("Association to [{}] with unknown UID is irrecoverably failed. " +
+            "Address cannot be quarantined without knowing the UID, gating instead for {} ms.",
+            remoteAddress, settings.RetryGateClosedFor.toMillis)
+          endpoints.markAsFailed(sender(), Deadline.now + settings.RetryGateClosedFor)
+        }
         AddressTerminatedTopic(context.system).publish(AddressTerminated(remoteAddress))
         Stop
 
@@ -479,7 +534,7 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
     case Quarantine(address, uidOption) ⇒
       // Stop writers
       endpoints.writableEndpointWithPolicyFor(address) match {
-        case Some(Pass(endpoint)) ⇒
+        case Some(Pass(endpoint, _, _)) ⇒
           context.stop(endpoint)
           if (uidOption.isEmpty) {
             log.warning("Association to [{}] with unknown UID is reported as quarantined, but " +
@@ -505,6 +560,8 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
       def createAndRegisterWritingEndpoint(refuseUid: Option[Int]): ActorRef =
         endpoints.registerWritableEndpoint(
           recipientAddress,
+          uid = None,
+          refuseUid,
           createEndpoint(
             recipientAddress,
             recipientRef.localAddressToUse,
@@ -515,7 +572,7 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
             refuseUid))
 
       endpoints.writableEndpointWithPolicyFor(recipientAddress) match {
-        case Some(Pass(endpoint)) ⇒
+        case Some(Pass(endpoint, _, _)) ⇒
           endpoint ! s
         case Some(Gated(timeOfRelease)) ⇒
           if (timeOfRelease.isOverdue()) createAndRegisterWritingEndpoint(refuseUid = None) ! s
@@ -529,51 +586,19 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
 
       }
 
-    case InboundAssociation(handle: AkkaProtocolHandle) ⇒ endpoints.readOnlyEndpointFor(handle.remoteAddress) match {
-      case Some(endpoint) ⇒
-        pendingReadHandoffs.get(endpoint) foreach (_.disassociate())
-        pendingReadHandoffs += endpoint -> handle
-        endpoint ! EndpointWriter.TakeOver(handle)
-      case None ⇒
-        if (endpoints.isQuarantined(handle.remoteAddress, handle.handshakeInfo.uid))
-          handle.disassociate(AssociationHandle.Quarantined)
-        else endpoints.writableEndpointWithPolicyFor(handle.remoteAddress) match {
-          case Some(Pass(ep)) ⇒
-            pendingReadHandoffs.get(ep) foreach (_.disassociate())
-            pendingReadHandoffs += ep -> handle
-            ep ! EndpointWriter.StopReading(ep)
-          case _ ⇒
-            val writing = settings.UsePassiveConnections && !endpoints.hasWritableEndpointFor(handle.remoteAddress)
-            eventPublisher.notifyListeners(AssociatedEvent(handle.localAddress, handle.remoteAddress, inbound = true))
-            val endpoint = createEndpoint(
-              handle.remoteAddress,
-              handle.localAddress,
-              transportMapping(handle.localAddress),
-              settings,
-              Some(handle),
-              writing,
-              refuseUid = None)
-            if (writing)
-              endpoints.registerWritableEndpoint(handle.remoteAddress, endpoint)
-            else {
-              endpoints.registerReadOnlyEndpoint(handle.remoteAddress, endpoint)
-              endpoints.writableEndpointWithPolicyFor(handle.remoteAddress) match {
-                case Some(Pass(_)) ⇒ // Leave it alone
-                case _ ⇒
-                  // Since we just communicated with the guy we can lift gate, quarantine, etc. New writer will be
-                  // opened at first write.
-                  endpoints.removePolicy(handle.remoteAddress)
-              }
-            }
-        }
-    }
+    case ia @ InboundAssociation(handle: AkkaProtocolHandle) ⇒
+      handleInboundAssociation(ia)
     case EndpointWriter.StoppedReading(endpoint) ⇒
       acceptPendingReader(takingOverFrom = endpoint)
     case Terminated(endpoint) ⇒
       acceptPendingReader(takingOverFrom = endpoint)
       endpoints.unregisterEndpoint(endpoint)
+      handleStashedInbound(endpoint)
     case EndpointWriter.TookOver(endpoint, handle) ⇒
       removePendingReader(takingOverFrom = endpoint, withHandle = handle)
+    case ReliableDeliverySupervisor.GotUid(uid, remoteAddress) ⇒
+      endpoints.registerWritableEndpointUid(remoteAddress, uid)
+      handleStashedInbound(sender)
     case Prune ⇒
       endpoints.prune()
     case ShutdownAndFlush ⇒
@@ -602,6 +627,54 @@ private[remote] class EndpointManager(conf: Config, log: LoggingAdapter) extends
     case s: Send                                   ⇒ extendedSystem.deadLetters ! s
     case InboundAssociation(h: AkkaProtocolHandle) ⇒ h.disassociate(AssociationHandle.Shutdown)
     case Terminated(_)                             ⇒ // why should we care now?
+  }
+
+  def handleInboundAssociation(ia: InboundAssociation): Unit = ia match {
+    case ia @ InboundAssociation(handle: AkkaProtocolHandle) ⇒ endpoints.readOnlyEndpointFor(handle.remoteAddress) match {
+      case Some(endpoint) ⇒
+        pendingReadHandoffs.get(endpoint) foreach (_.disassociate())
+        pendingReadHandoffs += endpoint -> handle
+        endpoint ! EndpointWriter.TakeOver(handle, self)
+      case None ⇒
+        if (endpoints.isQuarantined(handle.remoteAddress, handle.handshakeInfo.uid))
+          handle.disassociate(AssociationHandle.Quarantined)
+        else endpoints.writableEndpointWithPolicyFor(handle.remoteAddress) match {
+          case Some(Pass(ep, None, _)) ⇒
+            stashedInbound += ep -> (stashedInbound.getOrElse(ep, Vector.empty) :+ ia)
+          case Some(Pass(ep, Some(uid), _)) ⇒
+            if (handle.handshakeInfo.uid == uid) {
+              pendingReadHandoffs.get(ep) foreach (_.disassociate())
+              pendingReadHandoffs += ep -> handle
+              ep ! EndpointWriter.StopReading(ep, self)
+            } else {
+              context.stop(ep)
+              endpoints.unregisterEndpoint(ep)
+              pendingReadHandoffs -= ep
+              createAndRegisterEndpoint(handle, refuseUid = Some(uid))
+            }
+          case state ⇒
+            createAndRegisterEndpoint(handle, refuseUid = endpoints.refuseUid(handle.remoteAddress))
+        }
+    }
+  }
+
+  private def createAndRegisterEndpoint(handle: AkkaProtocolHandle, refuseUid: Option[Int]): Unit = {
+    val writing = settings.UsePassiveConnections && !endpoints.hasWritableEndpointFor(handle.remoteAddress)
+    eventPublisher.notifyListeners(AssociatedEvent(handle.localAddress, handle.remoteAddress, inbound = true))
+    val endpoint = createEndpoint(
+      handle.remoteAddress,
+      handle.localAddress,
+      transportMapping(handle.localAddress),
+      settings,
+      Some(handle),
+      writing,
+      refuseUid = refuseUid)
+    if (writing)
+      endpoints.registerWritableEndpoint(handle.remoteAddress, Some(handle.handshakeInfo.uid), refuseUid, endpoint)
+    else {
+      endpoints.registerReadOnlyEndpoint(handle.remoteAddress, endpoint)
+      endpoints.removePolicy(handle.remoteAddress)
+    }
   }
 
   private def listens: Future[Seq[(AkkaProtocolTransport, Address, Promise[AssociationEventListener])]] = {

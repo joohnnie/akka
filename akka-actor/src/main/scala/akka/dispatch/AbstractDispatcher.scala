@@ -8,11 +8,11 @@ import java.util.concurrent._
 import akka.event.Logging.{ Debug, Error, LogEventException }
 import akka.actor._
 import akka.dispatch.sysmsg._
-import akka.event.{ BusLogging, EventStream }
+import akka.event.EventStream
 import com.typesafe.config.{ ConfigFactory, Config }
 import akka.util.{ Unsafe, Index }
 import scala.annotation.tailrec
-import scala.concurrent.forkjoin.{ ForkJoinTask, ForkJoinPool }
+import scala.concurrent.forkjoin.{ ForkJoinTask, ForkJoinPool, ForkJoinWorkerThread }
 import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext
 import scala.concurrent.ExecutionContextExecutor
@@ -137,7 +137,7 @@ abstract class MessageDispatcher(val configurator: MessageDispatcherConfigurator
    * Detaches the specified actor instance from this dispatcher
    */
   final def detach(actor: ActorCell): Unit = try unregister(actor) finally ifSensibleToDoSoThenScheduleShutdown()
-
+  final protected def resubmitOnBlock: Boolean = true // We want to avoid starvation
   final override protected def unbatchedExecute(r: Runnable): Unit = {
     val invocation = TaskInvocation(eventStream, r, taskCleanup)
     addInhabitants(+1)
@@ -377,8 +377,16 @@ object ForkJoinExecutorConfigurator {
                                threadFactory: ForkJoinPool.ForkJoinWorkerThreadFactory,
                                unhandledExceptionHandler: Thread.UncaughtExceptionHandler)
     extends ForkJoinPool(parallelism, threadFactory, unhandledExceptionHandler, true) with LoadMetrics {
-    override def execute(r: Runnable): Unit =
-      if (r eq null) throw new NullPointerException else super.execute(new AkkaForkJoinTask(r))
+    override def execute(r: Runnable): Unit = {
+      if (r eq null) throw new NullPointerException("The Runnable must not be null")
+      val task =
+        if (r.isInstanceOf[ForkJoinTask[_]]) r.asInstanceOf[ForkJoinTask[Any]]
+        else new AkkaForkJoinTask(r)
+      Thread.currentThread match {
+        case worker: ForkJoinWorkerThread if worker.getPool eq this ⇒ task.fork()
+        case _ ⇒ super.execute(task)
+      }
+    }
 
     def atFullThrottle(): Boolean = this.getActiveThreadCount() >= this.getParallelism()
   }
@@ -391,6 +399,9 @@ object ForkJoinExecutorConfigurator {
     override def getRawResult(): Unit = ()
     override def setRawResult(unit: Unit): Unit = ()
     final override def exec(): Boolean = try { runnable.run(); true } catch {
+      case ie: InterruptedException ⇒
+        Thread.currentThread.interrupt()
+        false
       case anything: Throwable ⇒
         val t = Thread.currentThread
         t.getUncaughtExceptionHandler match {

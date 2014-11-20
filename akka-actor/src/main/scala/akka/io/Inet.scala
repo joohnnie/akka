@@ -3,29 +3,68 @@
  */
 package akka.io
 
-import java.net.{ DatagramSocket, Socket, ServerSocket }
+import java.nio.channels.{ DatagramChannel, SocketChannel, ServerSocketChannel }
 
 object Inet {
 
   /**
    * SocketOption is a package of data (from the user) and associated
-   * behavior (how to apply that to a socket).
+   * behavior (how to apply that to a channel).
    */
   trait SocketOption {
 
-    def beforeDatagramBind(ds: DatagramSocket): Unit = ()
-
-    def beforeServerSocketBind(ss: ServerSocket): Unit = ()
+    /**
+     * Action to be taken for this option before bind() is called
+     */
+    def beforeBind(ds: DatagramChannel): Unit = ()
 
     /**
-     * Action to be taken for this option before calling connect()
+     * Action to be taken for this option before bind() is called
      */
-    def beforeConnect(s: Socket): Unit = ()
+    def beforeBind(ss: ServerSocketChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option before bind() is called
+     */
+    def beforeBind(s: SocketChannel): Unit = ()
+
     /**
      * Action to be taken for this option after connect returned (i.e. on
      * the slave socket for servers).
      */
-    def afterConnect(s: Socket): Unit = ()
+    def afterConnect(c: DatagramChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option after connect returned (i.e. on
+     * the slave socket for servers).
+     */
+    def afterConnect(c: ServerSocketChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option after connect returned (i.e. on
+     * the slave socket for servers).
+     */
+    def afterConnect(c: SocketChannel): Unit = ()
+  }
+
+  /**
+   * DatagramChannel creation behavior.
+   */
+  class DatagramChannelCreator extends SocketOption {
+
+    /**
+     * Open and return new DatagramChannel.
+     *
+     * [[scala.throws]] is needed because [[DatagramChannel.open]] method
+     * can throw an exception.
+     */
+    @throws(classOf[Exception])
+    def create(): DatagramChannel = DatagramChannel.open()
+  }
+
+  object DatagramChannelCreator {
+    val default = new DatagramChannelCreator()
+    def apply() = default
   }
 
   object SO {
@@ -37,9 +76,9 @@ object Inet {
      */
     final case class ReceiveBufferSize(size: Int) extends SocketOption {
       require(size > 0, "ReceiveBufferSize must be > 0")
-      override def beforeServerSocketBind(s: ServerSocket): Unit = s.setReceiveBufferSize(size)
-      override def beforeDatagramBind(s: DatagramSocket): Unit = s.setReceiveBufferSize(size)
-      override def beforeConnect(s: Socket): Unit = s.setReceiveBufferSize(size)
+      override def beforeBind(c: ServerSocketChannel): Unit = c.socket.setReceiveBufferSize(size)
+      override def beforeBind(c: DatagramChannel): Unit = c.socket.setReceiveBufferSize(size)
+      override def beforeBind(c: SocketChannel): Unit = c.socket.setReceiveBufferSize(size)
     }
 
     // server socket options
@@ -50,9 +89,9 @@ object Inet {
      * For more information see [[java.net.Socket.setReuseAddress]]
      */
     final case class ReuseAddress(on: Boolean) extends SocketOption {
-      override def beforeServerSocketBind(s: ServerSocket): Unit = s.setReuseAddress(on)
-      override def beforeDatagramBind(s: DatagramSocket): Unit = s.setReuseAddress(on)
-      override def beforeConnect(s: Socket): Unit = s.setReuseAddress(on)
+      override def beforeBind(c: ServerSocketChannel): Unit = c.socket.setReuseAddress(on)
+      override def beforeBind(c: DatagramChannel): Unit = c.socket.setReuseAddress(on)
+      override def beforeBind(c: SocketChannel): Unit = c.socket.setReuseAddress(on)
     }
 
     /**
@@ -62,7 +101,8 @@ object Inet {
      */
     final case class SendBufferSize(size: Int) extends SocketOption {
       require(size > 0, "SendBufferSize must be > 0")
-      override def afterConnect(s: Socket): Unit = s.setSendBufferSize(size)
+      override def afterConnect(c: DatagramChannel): Unit = c.socket.setSendBufferSize(size)
+      override def afterConnect(c: SocketChannel): Unit = c.socket.setSendBufferSize(size)
     }
 
     /**
@@ -74,7 +114,8 @@ object Inet {
      */
     final case class TrafficClass(tc: Int) extends SocketOption {
       require(0 <= tc && tc <= 255, "TrafficClass needs to be in the interval [0, 255]")
-      override def afterConnect(s: Socket): Unit = s.setTrafficClass(tc)
+      override def afterConnect(c: DatagramChannel): Unit = c.socket.setTrafficClass(tc)
+      override def afterConnect(c: SocketChannel): Unit = c.socket.setTrafficClass(tc)
     }
 
   }
@@ -144,4 +185,43 @@ object Inet {
     def trafficClass(tc: Int) = TrafficClass(tc)
   }
 
+  /**
+   * Java API: AbstractSocketOption is a package of data (from the user) and associated
+   * behavior (how to apply that to a channel).
+   */
+  abstract class AbstractSocketOption extends SocketOption {
+
+    /**
+     * Action to be taken for this option before bind() is called
+     */
+    override def beforeBind(ds: DatagramChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option before bind() is called
+     */
+    override def beforeBind(ss: ServerSocketChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option before bind() is called
+     */
+    override def beforeBind(s: SocketChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option after connect returned (i.e. on
+     * the slave socket for servers).
+     */
+    override def afterConnect(c: DatagramChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option after connect returned (i.e. on
+     * the slave socket for servers).
+     */
+    override def afterConnect(c: ServerSocketChannel): Unit = ()
+
+    /**
+     * Action to be taken for this option after connect returned (i.e. on
+     * the slave socket for servers).
+     */
+    override def afterConnect(c: SocketChannel): Unit = ()
+  }
 }

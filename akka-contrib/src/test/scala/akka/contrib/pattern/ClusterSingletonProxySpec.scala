@@ -26,7 +26,7 @@ class ClusterSingletonProxySpec extends WordSpecLike with Matchers with BeforeAn
     }
   }
 
-  override def afterAll() = testSystems.foreach(_.system.shutdown())
+  override def afterAll() = testSystems.foreach(_.system.terminate())
 }
 
 object ClusterSingletonProxySpec {
@@ -85,7 +85,7 @@ object ClusterSingletonProxySpec {
 
     def receive: Actor.Receive = {
       case msg ⇒
-        sender ! "Got " + msg
+        sender() ! "Got " + msg
     }
   }
 

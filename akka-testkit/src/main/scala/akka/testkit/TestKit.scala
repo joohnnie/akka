@@ -6,6 +6,7 @@ package akka.testkit
 import language.postfixOps
 import scala.annotation.{ varargs, tailrec }
 import scala.collection.immutable
+import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import java.util.concurrent._
@@ -332,10 +333,20 @@ trait TestKitBase {
    */
   def expectMsg[T](max: FiniteDuration, obj: T): T = expectMsg_internal(max.dilated, obj)
 
-  private def expectMsg_internal[T](max: Duration, obj: T): T = {
+  /**
+   * Receive one message from the test actor and assert that it equals the
+   * given object. Wait time is bounded by the given duration, with an
+   * AssertionFailure being thrown in case of timeout.
+   *
+   * @return the received object
+   */
+  def expectMsg[T](max: FiniteDuration, hint: String, obj: T): T = expectMsg_internal(max.dilated, obj, Some(hint))
+
+  private def expectMsg_internal[T](max: Duration, obj: T, hint: Option[String] = None): T = {
     val o = receiveOne(max)
-    assert(o ne null, s"timeout ($max) during expectMsg while waiting for $obj")
-    assert(obj == o, s"expected $obj, found $o")
+    val hintOrEmptyString = hint.map(": " + _).getOrElse("")
+    assert(o ne null, s"timeout ($max) during expectMsg while waiting for $obj" + hintOrEmptyString)
+    assert(obj == o, s"expected $obj, found $o" + hintOrEmptyString)
     o.asInstanceOf[T]
   }
 
@@ -630,7 +641,7 @@ trait TestKitBase {
     for { x ← 1 to n } yield {
       val timeout = stop - now
       val o = receiveOne(timeout)
-      assert(o ne null, s"timeout ($max) while expecting $n messages")
+      assert(o ne null, s"timeout ($max) while expecting $n messages (got ${x - 1})")
       o
     }
   }
@@ -688,10 +699,14 @@ trait TestKitBase {
  *
  *     val test = system.actorOf(Props[SomeActor]
  *
- *     within (1 second) {
- *       test ! SomeWork
- *       expectMsg(Result1) // bounded to 1 second
- *       expectMsg(Result2) // bounded to the remainder of the 1 second
+ *       within (1 second) {
+ *         test ! SomeWork
+ *         expectMsg(Result1) // bounded to 1 second
+ *         expectMsg(Result2) // bounded to the remainder of the 1 second
+ *       }
+ *
+ *     } finally {
+ *       system.terminate()
  *     }
  *
  *   } finally {
@@ -758,8 +773,8 @@ object TestKit {
   def shutdownActorSystem(actorSystem: ActorSystem,
                           duration: Duration = 10.seconds,
                           verifySystemShutdown: Boolean = false): Unit = {
-    actorSystem.shutdown()
-    try actorSystem.awaitTermination(duration) catch {
+    actorSystem.terminate()
+    try Await.ready(actorSystem.whenTerminated, duration) catch {
       case _: TimeoutException ⇒
         val msg = "Failed to stop [%s] within [%s] \n%s".format(actorSystem.name, duration,
           actorSystem.asInstanceOf[ActorSystemImpl].printTree)

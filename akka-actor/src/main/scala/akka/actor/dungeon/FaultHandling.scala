@@ -16,6 +16,7 @@ import scala.collection.immutable
 import scala.concurrent.duration.Duration
 import scala.util.control.Exception._
 import scala.util.control.NonFatal
+import akka.actor.ActorRefScope
 
 private[akka] trait FaultHandling { this: ActorCell ⇒
 
@@ -71,7 +72,7 @@ private[akka] trait FaultHandling { this: ActorCell ⇒
           clearActorFields(failedActor)
         }
       }
-      assert(mailbox.isSuspended, "mailbox must be suspended during restart, status=" + mailbox.status)
+      assert(mailbox.isSuspended, "mailbox must be suspended during restart, status=" + mailbox.currentStatus)
       if (!setChildrenTerminationReason(ChildrenContainer.Recreation(cause))) finishRecreate(cause, failedActor)
     } else {
       // need to keep that suspend counter balanced
@@ -117,7 +118,7 @@ private[akka] trait FaultHandling { this: ActorCell ⇒
    * Do create the actor in response to a failure.
    */
   protected def faultCreate(): Unit = {
-    assert(mailbox.isSuspended, "mailbox must be suspended during failed creation, status=" + mailbox.status)
+    assert(mailbox.isSuspended, "mailbox must be suspended during failed creation, status=" + mailbox.currentStatus)
     assert(perpetrator == self)
 
     setReceiveTimeout(Duration.Undefined)
@@ -147,6 +148,14 @@ private[akka] trait FaultHandling { this: ActorCell ⇒
 
     // stop all children, which will turn childrenRefs into TerminatingChildrenContainer (if there are children)
     children foreach stop
+
+    if (systemImpl.aborting) {
+      // separate iteration because this is a very rare case that should not penalize normal operation
+      children foreach {
+        case ref: ActorRefScope if !ref.isLocal ⇒ self.sendSystemMessage(DeathWatchNotification(ref, true, false))
+        case _                                  ⇒
+      }
+    }
 
     val wasTerminating = isTerminating
 

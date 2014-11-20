@@ -10,11 +10,11 @@ import akka.testkit.JavaTestKit;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import scala.PartialFunction;
 import scala.concurrent.duration.Duration;
-import scala.runtime.BoxedUnit;
+import scala.concurrent.Await;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 public class InitializationDocTest {
 
@@ -26,27 +26,26 @@ public class InitializationDocTest {
   }
 
   @AfterClass
-  public static void afterClass() {
-    system.shutdown();
-    system.awaitTermination(Duration.create("5 seconds"));
+  public static void afterClass() throws Exception {
+      Await.ready(system.terminate(), Duration.create("5 seconds"));
   }
 
   public static class MessageInitExample extends AbstractActor {
-    //#messageInit
     private String initializeMe = null;
 
-    @Override
-    public PartialFunction<Object, BoxedUnit> receive() {
-      return ReceiveBuilder.
+    public MessageInitExample() {
+      //#messageInit
+      receive(ReceiveBuilder.
         matchEquals("init", m1 -> {
           initializeMe = "Up and running";
           context().become(ReceiveBuilder.
             matchEquals("U OK?", m2 -> {
               sender().tell(initializeMe, self());
             }).build());
-        }).build();
+        }).build()
+      //#messageInit
+      );
     }
-    //#messageInit
   }
 
   @Test

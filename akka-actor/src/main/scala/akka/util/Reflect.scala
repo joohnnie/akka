@@ -28,7 +28,7 @@ private[akka] object Reflect {
    */
   val getCallerClass: Option[Int ⇒ Class[_]] = {
     try {
-      val c = Class.forName("sun.reflect.Reflection");
+      val c = Class.forName("sun.reflect.Reflection")
       val m = c.getMethod("getCallerClass", Array(classOf[Int]): _*)
       Some((i: Int) ⇒ m.invoke(null, Array[AnyRef](i.asInstanceOf[java.lang.Integer]): _*).asInstanceOf[Class[_]])
     } catch {
@@ -125,7 +125,7 @@ private[akka] object Reflect {
         case c: Class[_] if marker isAssignableFrom c ⇒ c
         case t: ParameterizedType if marker isAssignableFrom t.getRawType.asInstanceOf[Class[_]] ⇒ t
       } match {
-        case None                       ⇒ throw new IllegalArgumentException("cannot find [$marker] in ancestors of [$root]")
+        case None                       ⇒ throw new IllegalArgumentException(s"cannot find [$marker] in ancestors of [$root]")
         case Some(c: Class[_])          ⇒ if (c == marker) c else rec(c)
         case Some(t: ParameterizedType) ⇒ if (t.getRawType == marker) t else rec(t.getRawType.asInstanceOf[Class[_]])
         case _                          ⇒ ??? // cannot happen due to collectFirst

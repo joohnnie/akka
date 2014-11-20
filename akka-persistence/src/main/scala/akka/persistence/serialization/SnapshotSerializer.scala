@@ -6,9 +6,11 @@
 package akka.persistence.serialization
 
 import java.io._
-
 import akka.actor._
 import akka.serialization.{ Serializer, SerializationExtension }
+import akka.serialization.Serialization
+import scala.util.Success
+import scala.util.Failure
 
 /**
  * Wrapper for snapshot `data`. Snapshot `data` are the actual snapshot objects captured by
@@ -32,6 +34,12 @@ class SnapshotSerializer(system: ExtendedActorSystem) extends Serializer {
   def identifier: Int = 8
   def includeManifest: Boolean = false
 
+  private lazy val transportInformation: Option[Serialization.Information] = {
+    val address = system.provider.getDefaultAddress
+    if (address.hasLocalScope) None
+    else Some(Serialization.Information(address, system))
+  }
+
   /**
    * Serializes a [[Snapshot]]. Delegates serialization of snapshot `data` to a matching
    * `akka.serialization.Serializer`.
@@ -49,22 +57,31 @@ class SnapshotSerializer(system: ExtendedActorSystem) extends Serializer {
     Snapshot(snapshotFromBinary(bytes))
 
   private def snapshotToBinary(snapshot: AnyRef): Array[Byte] = {
-    val extension = SerializationExtension(system)
+    def serialize() = {
+      val extension = SerializationExtension(system)
 
-    val snapshotSerializer = extension.findSerializerFor(snapshot)
-    val snapshotManifest = if (snapshotSerializer.includeManifest) Some(snapshot.getClass.getName) else None
+      val snapshotSerializer = extension.findSerializerFor(snapshot)
 
-    val header = SnapshotHeader(snapshotSerializer.identifier, snapshotManifest)
-    val headerSerializer = extension.findSerializerFor(header)
-    val headerBytes = headerSerializer.toBinary(header)
+      val headerOut = new ByteArrayOutputStream
+      writeInt(headerOut, snapshotSerializer.identifier)
+      if (snapshotSerializer.includeManifest)
+        headerOut.write(snapshot.getClass.getName.getBytes("utf-8"))
+      val headerBytes = headerOut.toByteArray
 
-    val out = new ByteArrayOutputStream
+      val out = new ByteArrayOutputStream
 
-    writeInt(out, headerBytes.length)
+      writeInt(out, headerBytes.length)
 
-    out.write(headerBytes)
-    out.write(snapshotSerializer.toBinary(snapshot))
-    out.toByteArray
+      out.write(headerBytes)
+      out.write(snapshotSerializer.toBinary(snapshot))
+      out.toByteArray
+    }
+
+    // serialize actor references with full address information (defaultAddress)
+    transportInformation match {
+      case Some(ti) ⇒ Serialization.currentTransportInformation.withValue(ti) { serialize() }
+      case None     ⇒ serialize()
+    }
   }
 
   private def snapshotFromBinary(bytes: Array[Byte]): AnyRef = {
@@ -74,7 +91,25 @@ class SnapshotSerializer(system: ExtendedActorSystem) extends Serializer {
     val headerBytes = bytes.slice(4, headerLength + 4)
     val snapshotBytes = bytes.drop(headerLength + 4)
 
-    val header = extension.deserialize(headerBytes, classOf[SnapshotHeader]).get
+    // If we are allowed to break serialization compatibility of stored snapshots in 2.4
+    // we can remove this attempt of deserialize SnapshotHeader with JavaSerializer.
+    // Then the class SnapshotHeader can be removed. See isseue #16009
+    val header = extension.deserialize(headerBytes, classOf[SnapshotHeader]) match {
+      case Success(header) ⇒
+        header
+      case Failure(_) ⇒
+        val headerIn = new ByteArrayInputStream(headerBytes)
+        val serializerId = readInt(headerIn)
+        val remaining = headerIn.available
+        val manifest =
+          if (remaining == 0) None
+          else {
+            val manifestBytes = Array.ofDim[Byte](remaining)
+            headerIn.read(manifestBytes)
+            Some(new String(manifestBytes, "utf-8"))
+          }
+        SnapshotHeader(serializerId, manifest)
+    }
     val manifest = header.manifest.map(system.dynamicAccess.getClassFor[AnyRef](_).get)
 
     extension.deserialize[AnyRef](snapshotBytes, header.serializerId, manifest).get
@@ -84,5 +119,5 @@ class SnapshotSerializer(system: ExtendedActorSystem) extends Serializer {
     0 to 24 by 8 foreach { shift ⇒ outputStream.write(i >> shift) }
 
   private def readInt(inputStream: InputStream) =
-    (0 to 24 by 8).foldLeft(0) { (id, shift) ⇒ (id | (inputStream.read() >> shift)) }
+    (0 to 24 by 8).foldLeft(0) { (id, shift) ⇒ (id | (inputStream.read() << shift)) }
 }
