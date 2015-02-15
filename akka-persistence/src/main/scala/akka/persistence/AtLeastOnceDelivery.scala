@@ -103,9 +103,7 @@ object AtLeastOnceDelivery {
  * serialization mechanism. It is easiest to include the bytes of the `AtLeastOnceDeliverySnapshot`
  * as a blob in your custom snapshot.
  */
-trait AtLeastOnceDelivery extends Processor {
-  // FIXME The reason for extending Processor instead of PersistentActor is
-  //       the class hierarchy for UntypedPersistentActorWithAtLeastOnceDelivery
+trait AtLeastOnceDelivery extends Eventsourced {
   import AtLeastOnceDelivery._
   import AtLeastOnceDelivery.Internal._
 
@@ -121,6 +119,22 @@ trait AtLeastOnceDelivery extends Processor {
 
   private val defaultRedeliverInterval: FiniteDuration =
     Persistence(context.system).settings.atLeastOnceDelivery.redeliverInterval
+
+  /**
+   * Maximum number of unconfirmed messages that will be sent at each redelivery burst
+   * (burst frequency is half of the redelivery interval).
+   * If there's a lot of unconfirmed messages (e.g. if the destination is not available for a long time),
+   * this helps to prevent an overwhelming amount of messages to be sent at once.
+   *
+   * The default value can be configured with the
+   * `akka.persistence.at-least-once-delivery.redelivery-burst-limit`
+   * configuration key. This method can be overridden by implementation classes to return
+   * non-default values.
+   */
+  def redeliveryBurstLimit: Int = defaultRedeliveryBurstLimit
+
+  private val defaultRedeliveryBurstLimit: Int =
+    Persistence(context.system).settings.atLeastOnceDelivery.redeliveryBurstLimit
 
   /**
    * After this number of delivery attempts a [[AtLeastOnceDelivery.UnconfirmedWarning]] message
@@ -223,15 +237,17 @@ trait AtLeastOnceDelivery extends Processor {
     val deadline = now - redeliverInterval.toNanos
     var warnings = Vector.empty[UnconfirmedDelivery]
 
-    unconfirmed foreach {
-      case (deliveryId, delivery) ⇒
-        if (delivery.timestamp <= deadline) {
+    unconfirmed
+      .iterator
+      .filter { case (_, delivery) ⇒ delivery.timestamp <= deadline }
+      .take(redeliveryBurstLimit)
+      .foreach {
+        case (deliveryId, delivery) ⇒
           send(deliveryId, delivery, now)
 
           if (delivery.attempt == warnAfterNumberOfUnconfirmedAttempts)
             warnings :+= UnconfirmedDelivery(deliveryId, delivery.destination, delivery.message)
-        }
-    }
+      }
 
     if (warnings.nonEmpty)
       self ! UnconfirmedWarning(warnings)
@@ -284,9 +300,9 @@ trait AtLeastOnceDelivery extends Processor {
     super.aroundPostStop()
   }
 
-  override private[persistence] def onReplaySuccess(receive: Receive, awaitReplay: Boolean): Unit = {
-    super.onReplaySuccess(receive, awaitReplay)
+  override private[persistence] def onReplaySuccess(): Unit = {
     redeliverOverdue()
+    super.onReplaySuccess()
   }
 
   /**

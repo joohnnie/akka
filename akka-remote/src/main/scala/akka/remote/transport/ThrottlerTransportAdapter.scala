@@ -298,7 +298,7 @@ private[transport] class ThrottlerManager(wrappedTransport: Transport) extends A
     if (target.isTerminated) Future successful SetThrottleAck
     else {
       val internalTarget = target.asInstanceOf[InternalActorRef]
-      val ref = PromiseActorRef(internalTarget.provider, timeout, target.toString)
+      val ref = PromiseActorRef(internalTarget.provider, timeout, target, mode.getClass.getName)
       internalTarget.sendSystemMessage(Watch(internalTarget, ref))
       target.tell(mode, ref)
       ref.result.future.transform({
@@ -471,7 +471,7 @@ private[transport] class ThrottledAssociation(
     case Event(Disassociated(info), _) ⇒
       stop() // not notifying the upstream handler is intentional: we are relying on heartbeating
     case Event(FailWith(reason), _) ⇒
-      upstreamListener notify Disassociated(reason)
+      if (upstreamListener ne null) upstreamListener notify Disassociated(reason)
       stop()
   }
 

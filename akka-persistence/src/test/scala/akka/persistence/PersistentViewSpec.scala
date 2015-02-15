@@ -42,12 +42,16 @@ object PersistentViewSpec {
       case "boom" ⇒
         throw new TestException("boom")
 
+      case RecoveryFailure(cause) ⇒
+        throw cause // restart
+
       case payload if isPersistent && shouldFailOn(payload) ⇒
         throw new TestException("boom")
 
       case payload if isPersistent ⇒
         last = s"replicated-${payload}-${lastSequenceNr}"
         probe ! last
+
     }
 
     override def postRestart(reason: Throwable): Unit = {
@@ -177,22 +181,16 @@ abstract class PersistentViewSpec(config: Config) extends AkkaSpec(config) with 
     super.afterEach()
   }
 
-  def subscribeToConfirmation(probe: TestProbe): Unit =
-    system.eventStream.subscribe(probe.ref, classOf[Delivered])
-
-  def awaitConfirmation(probe: TestProbe): Unit =
-    probe.expectMsgType[Delivered]
-
   def subscribeToReplay(probe: TestProbe): Unit =
     system.eventStream.subscribe(probe.ref, classOf[ReplayMessages])
 
   "A persistent view" must {
-    "receive past updates from a processor" in {
+    "receive past updates from a persistent actor" in {
       view = system.actorOf(Props(classOf[TestPersistentView], name, viewProbe.ref))
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")
     }
-    "receive live updates from a processor" in {
+    "receive live updates from a persistent actor" in {
       view = system.actorOf(Props(classOf[TestPersistentView], name, viewProbe.ref))
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")

@@ -16,7 +16,9 @@ import scala.util.Failure
 object LocalActorRefProviderSpec {
   val config = """
     akka {
+      log-dead-letters = on
       actor {
+        debug.unhandled = on
         default-dispatcher {
           executor = "thread-pool-executor"
           thread-pool-executor {
@@ -55,6 +57,46 @@ class LocalActorRefProviderSpec extends AkkaSpec(LocalActorRefProviderSpec.confi
       b.path.name should be(childName)
     }
 
+  }
+
+  // #16757: messages sent to /user should be UnhandledMessages instead of DeadLetters
+  "The root guardian in a LocalActorRefProvider" must {
+    "not handle messages other than those it will act upon" in {
+
+      val message = "Hello, Mr. Root Guardian"
+      val rootGuardian = system.actorSelection("/")
+      val deadLettersPath = system.deadLetters.path
+
+      filterEvents(EventFilter.warning(s"unhandled message from Actor[$deadLettersPath]: $message", occurrences = 1)) {
+        rootGuardian ! message
+      }
+    }
+  }
+
+  "The user guardian in a LocalActorRefProvider" must {
+    "not handle messages other than those it will act upon" in {
+
+      val message = "Hello, Mr. User Guardian"
+      val userGuardian = system.actorSelection("/user")
+      val deadLettersPath = system.deadLetters.path
+
+      filterEvents(EventFilter.warning(s"unhandled message from Actor[$deadLettersPath]: $message", occurrences = 1)) {
+        userGuardian ! message
+      }
+    }
+  }
+
+  "The system guardian in a LocalActorRefProvider" must {
+    "not handle messages other than those it will act upon" in {
+
+      val message = "Hello, Mr. System Guardian"
+      val systemGuardian = system.actorSelection("/system")
+      val deadLettersPath = system.deadLetters.path
+
+      filterEvents(EventFilter.warning(s"unhandled message from Actor[$deadLettersPath]: $message", occurrences = 1)) {
+        systemGuardian ! message
+      }
+    }
   }
 
   "A LocalActorRef's ActorCell" must {
@@ -116,12 +158,16 @@ class LocalActorRefProviderSpec extends AkkaSpec(LocalActorRefProviderSpec.confi
     "throw suitable exceptions for malformed actor names" in {
       intercept[InvalidActorNameException](system.actorOf(Props.empty, null)).getMessage.contains("null") should be(true)
       intercept[InvalidActorNameException](system.actorOf(Props.empty, "")).getMessage.contains("empty") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "$hallo")).getMessage.contains("conform") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "a%")).getMessage.contains("conform") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%3")).getMessage.contains("conform") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%1t")).getMessage.contains("conform") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "a?")).getMessage.contains("conform") should be(true)
-      intercept[InvalidActorNameException](system.actorOf(Props.empty, "üß")).getMessage.contains("conform") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "$hallo")).getMessage.contains("not start with `$`") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "a%")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%3")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%xx")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%0G")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%gg")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "%1t")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "a?")).getMessage.contains("Illegal actor name") should be(true)
+      intercept[InvalidActorNameException](system.actorOf(Props.empty, "üß")).getMessage.contains("include only ASCII") should be(true)
     }
 
   }

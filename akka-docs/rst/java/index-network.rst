@@ -6,10 +6,10 @@ Networking
 
    ../common/cluster
    cluster-usage
+   cluster-metrics
    remoting
    serialization
    io
    io-tcp
    io-udp
-   zeromq
    camel

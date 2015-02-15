@@ -213,6 +213,8 @@ trait ActorRefFactory {
    *
    * @throws akka.ConfigurationException if deployment, dispatcher
    *   or mailbox configuration is wrong
+   * @throws UnsupportedOperationException if invoked on an ActorSystem that
+   *   uses a custom user guardian
    */
   def actorOf(props: Props): ActorRef
 
@@ -222,10 +224,13 @@ trait ActorRefFactory {
    * an `InvalidActorNameException` is thrown.
    *
    * See [[akka.actor.Props]] for details on how to obtain a `Props` object.
+   *
    * @throws akka.actor.InvalidActorNameException if the given name is
    *   invalid or already in use
    * @throws akka.ConfigurationException if deployment, dispatcher
    *   or mailbox configuration is wrong
+   * @throws UnsupportedOperationException if invoked on an ActorSystem that
+   *   uses a custom user guardian
    */
   def actorOf(props: Props, name: String): ActorRef
 
@@ -370,7 +375,6 @@ private[akka] object LocalActorRefProvider {
     def receive = {
       case Terminated(_)    ⇒ context.stop(self)
       case StopChild(child) ⇒ context.stop(child)
-      case m                ⇒ context.system.deadLetters forward DeadLetter(m, sender(), self)
     }
 
     // guardian MUST NOT lose its children during restart
@@ -402,13 +406,11 @@ private[akka] object LocalActorRefProvider {
       case RegisterTerminationHook if sender() != context.system.deadLetters ⇒
         terminationHooks += sender()
         context watch sender()
-      case m ⇒ context.system.deadLetters forward DeadLetter(m, sender(), self)
     }
 
     def terminating: Receive = {
       case Terminated(a)       ⇒ stopWhenAllTerminationHooksDone(a)
       case TerminationHookDone ⇒ stopWhenAllTerminationHooksDone(sender())
-      case m                   ⇒ context.system.deadLetters forward DeadLetter(m, sender(), self)
     }
 
     def stopWhenAllTerminationHooksDone(remove: ActorRef): Unit = {
@@ -587,7 +589,7 @@ private[akka] class LocalActorRefProvider private[akka] (
   override lazy val guardian: LocalActorRef = {
     val cell = rootGuardian.underlying
     cell.reserveChild("user")
-    val ref = new LocalActorRef(system, Props(classOf[LocalActorRefProvider.Guardian], guardianStrategy),
+    val ref = new LocalActorRef(system, system.guardianProps.getOrElse(Props(classOf[LocalActorRefProvider.Guardian], guardianStrategy)),
       defaultDispatcher, defaultMailbox, rootGuardian, rootPath / "user")
     cell.initChild(ref)
     ref.start()

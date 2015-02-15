@@ -73,6 +73,8 @@ trait AskSupport {
    *
    */
   def ask(actorRef: ActorRef, message: Any)(implicit timeout: Timeout): Future[Any] = actorRef ? message
+  def ask(actorRef: ActorRef, message: Any, sender: ActorRef)(implicit timeout: Timeout): Future[Any] =
+    actorRef.?(message)(timeout, sender)
 
   /**
    * Import this implicit conversion to gain `?` and `ask` methods on
@@ -119,6 +121,8 @@ trait AskSupport {
    *
    */
   def ask(actorSelection: ActorSelection, message: Any)(implicit timeout: Timeout): Future[Any] = actorSelection ? message
+  def ask(actorSelection: ActorSelection, message: Any, sender: ActorRef)(implicit timeout: Timeout): Future[Any] =
+    actorSelection.?(message)(timeout, sender)
 }
 
 /*
@@ -126,22 +130,22 @@ trait AskSupport {
  */
 final class AskableActorRef(val actorRef: ActorRef) extends AnyVal {
 
-  def ask(message: Any)(implicit timeout: Timeout): Future[Any] = actorRef match {
+  def ask(message: Any)(implicit timeout: Timeout, sender: ActorRef = Actor.noSender): Future[Any] = actorRef match {
     case ref: InternalActorRef if ref.isTerminated ⇒
       actorRef ! message
-      Future.failed[Any](new AskTimeoutException(s"Recipient[$actorRef] had already been terminated."))
+      Future.failed[Any](new AskTimeoutException(s"""Recipient[$actorRef] had already been terminated. Sender[$sender] sent the message of type "${message.getClass.getName}"."""))
     case ref: InternalActorRef ⇒
       if (timeout.duration.length <= 0)
-        Future.failed[Any](new IllegalArgumentException(s"Timeout length must not be negative, question not sent to [$actorRef]"))
+        Future.failed[Any](new IllegalArgumentException(s"""Timeout length must not be negative, question not sent to [$actorRef]. Sender[$sender] sent the message of type "${message.getClass.getName}"."""))
       else {
-        val a = PromiseActorRef(ref.provider, timeout, targetName = actorRef.toString)
+        val a = PromiseActorRef(ref.provider, timeout, targetName = actorRef, message.getClass.getName, sender)
         actorRef.tell(message, a)
         a.result.future
       }
-    case _ ⇒ Future.failed[Any](new IllegalArgumentException(s"Unsupported recipient ActorRef type, question not sent to [$actorRef]"))
+    case _ ⇒ Future.failed[Any](new IllegalArgumentException(s"""Unsupported recipient ActorRef type, question not sent to [$actorRef]. Sender[$sender] sent the message of type "${message.getClass.getName}"."""))
   }
 
-  def ?(message: Any)(implicit timeout: Timeout): Future[Any] = ask(message)(timeout)
+  def ?(message: Any)(implicit timeout: Timeout, sender: ActorRef = Actor.noSender): Future[Any] = ask(message)(timeout, sender)
 }
 
 /*
@@ -149,20 +153,20 @@ final class AskableActorRef(val actorRef: ActorRef) extends AnyVal {
  */
 final class AskableActorSelection(val actorSel: ActorSelection) extends AnyVal {
 
-  def ask(message: Any)(implicit timeout: Timeout): Future[Any] = actorSel.anchor match {
+  def ask(message: Any)(implicit timeout: Timeout, sender: ActorRef = Actor.noSender): Future[Any] = actorSel.anchor match {
     case ref: InternalActorRef ⇒
       if (timeout.duration.length <= 0)
         Future.failed[Any](
-          new IllegalArgumentException(s"Timeout length must not be negative, question not sent to [$actorSel]"))
+          new IllegalArgumentException(s"""Timeout length must not be negative, question not sent to [$actorSel]. Sender[$sender] sent the message of type "${message.getClass.getName}"."""))
       else {
-        val a = PromiseActorRef(ref.provider, timeout, targetName = actorSel.toString)
+        val a = PromiseActorRef(ref.provider, timeout, targetName = actorSel, message.getClass.getName, sender)
         actorSel.tell(message, a)
         a.result.future
       }
-    case _ ⇒ Future.failed[Any](new IllegalArgumentException(s"Unsupported recipient ActorRef type, question not sent to [$actorSel]"))
+    case _ ⇒ Future.failed[Any](new IllegalArgumentException(s"""Unsupported recipient ActorRef type, question not sent to [$actorSel]. Sender[$sender] sent the message of type "${message.getClass.getName}"."""))
   }
 
-  def ?(message: Any)(implicit timeout: Timeout): Future[Any] = ask(message)(timeout)
+  def ?(message: Any)(implicit timeout: Timeout, sender: ActorRef = Actor.noSender): Future[Any] = ask(message)(timeout, sender)
 }
 
 /**
@@ -171,11 +175,14 @@ final class AskableActorSelection(val actorSel: ActorSelection) extends AnyVal {
  *
  * INTERNAL API
  */
-private[akka] final class PromiseActorRef private (val provider: ActorRefProvider, val result: Promise[Any])
+private[akka] final class PromiseActorRef private (val provider: ActorRefProvider, val result: Promise[Any], _mcn: String)
   extends MinimalActorRef {
   import PromiseActorRef._
   import AbstractPromiseActorRef.stateOffset
   import AbstractPromiseActorRef.watchedByOffset
+
+  // This is necessary for weaving the PromiseActorRef into the asked message, i.e. the replyTo pattern.
+  @volatile var messageClassName = _mcn
 
   /**
    * As an optimization for the common (local) case we only register this PromiseActorRef
@@ -295,7 +302,7 @@ private[akka] final class PromiseActorRef private (val provider: ActorRefProvide
   @tailrec
   override def stop(): Unit = {
     def ensureCompleted(): Unit = {
-      result tryComplete Failure(new ActorKilledException("Stopped"))
+      result tryComplete ActorStopResult
       val watchers = clearWatchers()
       if (!watchers.isEmpty) {
         watchers foreach { watcher ⇒
@@ -324,13 +331,16 @@ private[akka] object PromiseActorRef {
   private case object Stopped
   private final case class StoppedWithPath(path: ActorPath)
 
-  def apply(provider: ActorRefProvider, timeout: Timeout, targetName: String): PromiseActorRef = {
+  private val ActorStopResult = Failure(new ActorKilledException("Stopped"))
+
+  def apply(provider: ActorRefProvider, timeout: Timeout, targetName: Any, messageClassName: String, sender: ActorRef = Actor.noSender): PromiseActorRef = {
     val result = Promise[Any]()
     val scheduler = provider.guardian.underlying.system.scheduler
-    val a = new PromiseActorRef(provider, result)
+    val a = new PromiseActorRef(provider, result, messageClassName)
     implicit val ec = a.internalCallingThreadExecutionContext
     val f = scheduler.scheduleOnce(timeout.duration) {
-      result tryComplete Failure(new AskTimeoutException(s"Ask timed out on [$targetName] after [${timeout.duration.toMillis} ms]"))
+      result tryComplete Failure(
+        new AskTimeoutException(s"""Ask timed out on [$targetName] after [${timeout.duration.toMillis} ms]. Sender[$sender] sent message of type "${a.messageClassName}"."""))
     }
     result.future onComplete { _ ⇒ try a.stop() finally f.cancel() }
     a

@@ -6,8 +6,6 @@ import sbt.Keys._
 
 object OSGi {
 
-  val Seq(scalaEpoch, scalaMajor) = """(\d+)\.(\d+)\..*""".r.unapplySeq(Dependencies.Versions.scalaVersion).get.map(_.toInt)
-
   // The included osgiSettings that creates bundles also publish the jar files
   // in the .../bundles directory which makes testing locally published artifacts
   // a pain. Create bundles but publish them to the normal .../jars directory.
@@ -19,7 +17,7 @@ object OSGi {
     OsgiKeys.exportPackage := Seq("akka*"),
     OsgiKeys.privatePackage := Seq("akka.osgi.impl"),
     //akka-actor packages are not imported, as contained in the CP
-    OsgiKeys.importPackage := (osgiOptionalImports map optionalResolution) ++ Seq("!sun.misc", scalaImport(), configImport(), "*"),
+    OsgiKeys.importPackage := (osgiOptionalImports map optionalResolution) ++ Seq("!sun.misc", scalaVersion(scalaImport).value, configImport(), "*"),
     // dynamicImportPackage needed for loading classes defined in configuration
     OsgiKeys.dynamicImportPackage := Seq("*")
   )
@@ -30,15 +28,9 @@ object OSGi {
 
   val cluster = exports(Seq("akka.cluster.*"), imports = Seq(protobufImport()))
 
+  val clusterMetrics = exports(Seq("akka.cluster.metrics.*"), imports = Seq(protobufImport(),kamonImport(),sigarImport()))
+
   val osgi = exports(Seq("akka.osgi.*"))
-
-  val osgiDiningHakkersSampleApi = exports(Seq("akka.sample.osgi.api"))
-
-  val osgiDiningHakkersSampleCommand = osgiSettings ++ Seq(OsgiKeys.bundleActivator := Option("akka.sample.osgi.command.Activator"), OsgiKeys.privatePackage := Seq("akka.sample.osgi.command"))
-
-  val osgiDiningHakkersSampleCore = exports(Seq("")) ++ Seq(OsgiKeys.bundleActivator := Option("akka.sample.osgi.activation.Activator"), OsgiKeys.privatePackage := Seq("akka.sample.osgi.internal", "akka.sample.osgi.activation", "akka.sample.osgi.service"))
-
-  val osgiDiningHakkersSampleUncommons = exports(Seq("org.uncommons.maths.random")) ++ Seq(OsgiKeys.privatePackage := Seq("org.uncommons.maths.binary", "org.uncommons.maths", "org.uncommons.maths.number"))
 
   val remote = exports(Seq("akka.remote.*"), imports = Seq(protobufImport()))
 
@@ -48,8 +40,6 @@ object OSGi {
 
   val testkit = exports(Seq("akka.testkit.*"))
 
-  val zeroMQ = exports(Seq("akka.zeromq.*"), imports = Seq(protobufImport()) )
-
   val osgiOptionalImports = Seq(
     // needed because testkit is normally not used in the application bundle,
     // but it should still be included as transitive dependency and used by BundleDelegatingClassLoader
@@ -58,14 +48,21 @@ object OSGi {
     "com.google.protobuf")
 
   def exports(packages: Seq[String] = Seq(), imports: Seq[String] = Nil) = osgiSettings ++ Seq(
-    OsgiKeys.importPackage := imports ++ defaultImports,
+    OsgiKeys.importPackage := imports ++ scalaVersion(defaultImports).value,
     OsgiKeys.exportPackage := packages
   )
-  def defaultImports = Seq("!sun.misc", akkaImport(), configImport(), scalaImport(), "*")
+  def defaultImports(scalaVersion: String) = Seq("!sun.misc", akkaImport(), configImport(), scalaImport(scalaVersion), "*")
   def akkaImport(packageName: String = "akka.*") = versionedImport(packageName, "2.4", "2.5")
   def configImport(packageName: String = "com.typesafe.config.*") = versionedImport(packageName, "1.2.0", "1.3.0")
   def protobufImport(packageName: String = "com.google.protobuf.*") = versionedImport(packageName, "2.5.0", "2.6.0")
-  def scalaImport(packageName: String = "scala.*") = versionedImport(packageName, s"$scalaEpoch.$scalaMajor", s"$scalaEpoch.${scalaMajor+1}")
+  def scalaImport(version: String) = {
+    val packageName = "scala.*"
+    val ScalaVersion = """(\d+)\.(\d+)\..*""".r
+    val ScalaVersion(epoch, major) = version
+    versionedImport(packageName, s"$epoch.$major", s"$epoch.${major.toInt+1}")
+  }
+  def kamonImport(packageName: String = "kamon.sigar.*") = optionalResolution(versionedImport(packageName, "1.6.5", "1.6.6"))
+  def sigarImport(packageName: String = "org.hyperic.*") = optionalResolution(versionedImport(packageName, "1.6.5", "1.6.6"))
   def optionalResolution(packageName: String) = "%s;resolution:=optional".format(packageName)
   def versionedImport(packageName: String, lower: String, upper: String) = s"""$packageName;version="[$lower,$upper)""""
 }

@@ -120,6 +120,12 @@ a reference to its enclosing scope:
 
 .. includecode:: code/docs/actor/ActorDocSpec.scala#props-factory
 
+Another good practice is to declare what messages an Actor can receive
+in the companion object of the Actor, which makes easier
+to know what it can receive:
+
+.. includecode:: code/docs/actor/ActorDocSpec.scala#messages-in-companion
+
 Creating Actors with Props
 --------------------------
 
@@ -190,7 +196,7 @@ The Inbox
 ---------
 
 When writing code outside of actors which shall communicate with actors, the
-``ask`` pattern can be a solution (see below), but there are two thing it
+``ask`` pattern can be a solution (see below), but there are two things it
 cannot do: receiving multiple replies (e.g. by subscribing an :class:`ActorRef`
 to a notification service) and watching other actors’ lifecycle. For these
 purposes there is the :class:`Inbox` class:

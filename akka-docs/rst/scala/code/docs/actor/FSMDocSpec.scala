@@ -12,13 +12,10 @@ import akka.util.ByteString
 import akka.actor.Props
 import scala.collection.immutable
 
-class FSMDocSpec extends MyFavoriteTestFrameWorkPlusAkkaTestKit {
-
-  //#fsm-code-elided
-  //#simple-imports
-  import akka.actor.{ Actor, ActorRef, FSM }
-  import scala.concurrent.duration._
-  //#simple-imports
+object FSMDocSpec {
+  // messages and data types
+  //#test-code
+  import akka.actor.ActorRef
   //#simple-events
   // received events
   final case class SetTarget(ref: ActorRef)
@@ -38,6 +35,17 @@ class FSMDocSpec extends MyFavoriteTestFrameWorkPlusAkkaTestKit {
   case object Uninitialized extends Data
   final case class Todo(target: ActorRef, queue: immutable.Seq[Any]) extends Data
   //#simple-state
+  //#test-code
+}
+
+class FSMDocSpec extends MyFavoriteTestFrameWorkPlusAkkaTestKit {
+  import FSMDocSpec._
+
+  //#fsm-code-elided
+  //#simple-imports
+  import akka.actor.{ ActorRef, FSM }
+  import scala.concurrent.duration._
+  //#simple-imports
   //#simple-fsm
   class Buncher extends FSM[State, Data] {
 
@@ -56,6 +64,7 @@ class FSMDocSpec extends MyFavoriteTestFrameWorkPlusAkkaTestKit {
       case Active -> Idle =>
         stateData match {
           case Todo(ref, queue) => ref ! Batch(queue)
+          case _                => // nothing to do
         }
     }
     //#transition-elided
@@ -106,7 +115,7 @@ class FSMDocSpec extends MyFavoriteTestFrameWorkPlusAkkaTestKit {
 
       //#transition-syntax
       onTransition {
-        case Idle -> Active => setTimer("timeout", Tick, 1 second, true)
+        case Idle -> Active => setTimer("timeout", Tick, 1 second, repeat = true)
         case Active -> _    => cancelTimer("timeout")
         case x -> Idle      => log.info("entering Idle from " + x)
       }

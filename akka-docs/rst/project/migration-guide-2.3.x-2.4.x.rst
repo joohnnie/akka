@@ -11,6 +11,18 @@ When migrating from earlier versions you should first follow the instructions fo
 migrating :ref:`1.3.x to 2.0.x <migration-2.0>` and then :ref:`2.0.x to 2.1.x <migration-2.1>`
 and then :ref:`2.1.x to 2.2.x <migration-2.2>` and then :ref:`2.2.x to 2.3.x <migration-2.3>`.
 
+Advanced Notice: TypedActors will go away
+========================================
+
+While technically not yet deprecated, the current ``akka.actor.TypedActor`` support will be superseded by
+the Akka Typed project that is currently being developed in open preview mode. If you are using TypedActors
+in your projects you are advised to look into this, as it is superior to the Active Object pattern expressed
+in TypedActors. The generic ActorRefs in Akka Typed allow the same type-safety that is afforded by
+TypedActors while retaining all the other benefits of an explicit actor model (including the ability to
+change behaviors etc.).
+
+It is likely that TypedActors will be officially deprecated in the next major update of Akka and subsequently removed.
+
 TestKit.remaining throws AssertionError
 =======================================
 
@@ -140,3 +152,43 @@ in order to allow package level log level definitions and ease source code looku
 In case you used specific "simple" logger name based rules in your ``logback.xml`` configurations,
 please change them to reflect appropriate package name, such as
 ``<logger name='akka.cluster' level='warn' />`` or ``<logger name='akka.remote' level='error' />``
+
+Default interval for TestKit.awaitAssert changed to 100 ms
+==========================================================
+
+Default check interval changed from 800 ms to 100 ms. You can define the interval explicitly if you need a
+longer interval.
+
+persistenceId
+=============
+
+It is now mandatory to define the ``persistenceId`` in subclasses of ``PersistentActor``, ``UntypedPersistentActor``
+and ``AbstractPersistentId``.
+
+The rationale behind this change being stricter de-coupling of your Actor hierarchy and the logical
+"which persistent entity this actor represents".
+
+In case you want to perserve the old behavior of providing the actor's path as the default ``persistenceId``, you can easily
+implement it yourself either as a helper trait or simply by overriding ``persistenceId`` as follows::
+
+    override def persistenceId = self.path.toStringWithoutAddress
+
+Secure Cookies
+==============
+
+`Secure cookies` feature was deprecated.
+
+New Cluster Metrics Extension 
+=============================
+Previously, cluster metrics functionality was located in the ``akka-cluster`` jar.
+Now it is split out and moved into a separate akka module: ``akka-cluster-metrics`` jar.
+The module comes with few enhancements, such as use of Kamon sigar-loader 
+for native library provisioning as well as use of statistical averaging of metrics data.
+Note that both old and new metrics configuration entries in the ``reference.conf`` 
+are still in the same name space ``akka.cluster.metrics`` but are not compatible.
+Make sure to disable legacy metrics in akka-cluster: ``akka.cluster.metrics.enabled=off``,
+since it is still enabled in akka-cluster by default (for compatibility with past releases).
+Router configuration entries have also changed for the module, they use prefix ``cluster-metrics-``:
+``cluster-metrics-adaptive-pool`` and ``cluster-metrics-adaptive-group``
+Metrics extension classes and objects are located in the new package ``akka.cluster.metrics``. 
+Please see :ref:`Scala <cluster-metrics-scala>`, :ref:`Java <cluster-metrics-java>` for more information.

@@ -120,6 +120,10 @@ When persisting events with ``persist`` it is guaranteed that the persistent act
 the ``persist`` call and the execution(s) of the associated event handler. This also holds for multiple ``persist``
 calls in context of a single command.
 
+If persistence of an event fails, the persistent actor will be stopped by throwing :class:`ActorKilledException`.
+This can be customized by handling ``PersistenceFailure`` message in ``receiveCommand`` and/or defining 
+``supervisorStrategy`` in parent actor.
+
 The easiest way to run this example yourself is to download `Typesafe Activator <http://www.typesafe.com/platform/getstarted>`_
 and open the tutorial named `Akka Persistence Samples in Java with Lambdas <http://www.typesafe.com/activator/template/akka-sample-persistence-java-lambda>`_.
 It contains instructions on how to run the ``PersistentActorExample``.
@@ -130,6 +134,8 @@ It contains instructions on how to run the ``PersistentActorExample``.
   with ``context().become()`` and ``context().unbecome()``. To get the actor into the same state after
   recovery you need to take special care to perform the same state transitions with ``become`` and
   ``unbecome`` in the ``receiveRecover`` method as you would have done in the command handler.
+  Note that when using ``become`` from ``receiveRecover`` it will still only use the ``receiveRecover``
+  behavior when replaying the events. When replay is completed it will use the new behavior.
 
 Identifiers
 -----------
@@ -159,6 +165,15 @@ In this case, a persistent actor must be recovered explicitly by sending it a ``
 
 .. includecode:: ../../../akka-samples/akka-sample-persistence-java-lambda/src/main/java/doc/LambdaPersistenceDocTest.java#recover-explicit
 
+.. warning::
+
+  If ``preStart`` is overriden by an empty implementation, incoming commands will not be processed by the
+  ``PersistentActor`` until it receives a ``Recover`` and finishes recovery.
+
+In order to completely skip recovery, you can signal it with ``Recover.create(0L)``
+
+.. includecode:: ../../../akka-samples/akka-sample-persistence-java-lambda/src/main/java/doc/LambdaPersistenceDocTest.java#recover-fully-disabled
+
 If not overridden, ``preStart`` sends a ``Recover`` message to ``self()``. Applications may also override
 ``preStart`` to define further ``Recover`` parameters such as an upper sequence number bound, for example.
 
@@ -181,11 +196,12 @@ recovery has completed, before processing any other message sent to the persiste
 The persistent actor will receive a special :class:`RecoveryCompleted` message right after recovery
 and before any other received messages.
 
+.. includecode:: ../../../akka-samples/akka-sample-persistence-java-lambda/src/main/java/doc/LambdaPersistenceDocTest.java#recovery-completed
+
 If there is a problem with recovering the state of the actor from the journal, the actor will be 
 sent a :class:`RecoveryFailure` message that it can choose to handle in ``receiveRecover``. If the
-actor doesn't handle the :class:`RecoveryFailure` message it will be stopped.
+actor doesn't handle the :class:`RecoveryFailure` message it will be stopped by throwing :class:`ActorKilledException`.
 
-.. includecode:: ../../../akka-samples/akka-sample-persistence-java-lambda/src/main/java/doc/LambdaPersistenceDocTest.java#recovery-completed
 
 Relaxed local consistency requirements and high throughput use-cases
 --------------------------------------------------------------------
@@ -206,7 +222,7 @@ The ordering between events is still guaranteed ("evt-b-1" will be sent after "e
 .. includecode:: ../../../akka-samples/akka-sample-persistence-java-lambda/src/main/java/doc/LambdaPersistenceDocTest.java#persist-async
 
 .. note::
-  In order to implement the pattern known as "*command sourcing*" simply ``persistAsync`` all incoming events right away,
+  In order to implement the pattern known as "*command sourcing*" simply call ``persistAsync`` on all incoming messages right away,
   and handle them in the callback.
 
 .. warning::
